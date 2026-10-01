@@ -1,0 +1,56 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
+      }
+    },
+    {
+      "name": "vs2026",
+      "displayName": "Visual Studio 2026 MSVC",
+      "inherits": "base",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "toolset": "v145",
+      "cacheVariables": {
+        "FASTERNGIO_ENABLE_GPU": "ON",
+        "VCPKG_MANIFEST_FEATURES": "gpu"
+      }
+    },
+    {
+      "name": "vs2026-cpu",
+      "displayName": "Visual Studio 2026 MSVC (CPU only)",
+      "inherits": "base",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "toolset": "v145",
+      "cacheVariables": {
+        "FASTERNGIO_ENABLE_GPU": "OFF"
+      }
+    },
+    {
+      "name": "vs2026-clangcl",
+      "displayName": "Visual Studio 2026 clang-cl (-Werror)",
+      "inherits": "vs2026",
+      "toolset": "ClangCL",
+      "cacheVariables": {
+        "FASTERNGIO_WARNINGS_AS_ERRORS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "vs2026", "configurePreset": "vs2026", "configuration": "RelWithDebInfo" },
+    { "name": "vs2026-cpu", "configurePreset": "vs2026-cpu", "configuration": "RelWithDebInfo" },
+    { "name": "vs2026-clangcl", "configurePreset": "vs2026-clangcl", "configuration": "RelWithDebInfo" }
+  ],
+  "testPresets": [
+    { "name": "vs2026", "configurePreset": "vs2026", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } },
+    { "name": "vs2026-cpu", "configurePreset": "vs2026-cpu", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } }
+  ]
+}

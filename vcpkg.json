@@ -1,0 +1,33 @@
+{
+  "builtin-baseline": "82b6bc886d7b0f8342e34babc2e0b8943f79b0e1",
+  "name": "fasterngio",
+  "version-string": "0.1.0",
+  "description": "GPU-accelerated NGIO-compatible grass cache generator for Skyrim Special Edition.",
+  "license": "GPL-3.0-or-later",
+  "supports": "windows & x64",
+  "dependencies": [
+    "zlib",
+    "lz4",
+    "tbb",
+    "spdlog",
+    "fmt",
+    "gtest",
+    {
+      "name": "tracy",
+      "features": [ "on-demand" ]
+    }
+  ],
+  "features": {
+    "gpu": {
+      "description": "OpenRenderGraph/BasicRHI ray-traced rejection.",
+      "dependencies": [
+        "directx-headers",
+        "directx-dxc",
+        "flecs",
+        "boost-container-hash",
+        "nlohmann-json",
+        "sqlite3"
+      ]
+    }
+  }
+}
