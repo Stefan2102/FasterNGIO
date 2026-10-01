@@ -3,6 +3,8 @@
 
 #include "Grass/Placement.h"
 
+#include <oneapi/tbb/parallel_for.h>
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -10,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace FasterNGIO::Grass
 {
@@ -374,6 +377,29 @@ namespace FasterNGIO::Grass
 			return maxCos <= a_sample.normal[2] && a_sample.normal[2] <= minCos;
 		}
 
+		// The grass types the engine takes from a land texture, in GNAM order: only GNAMs that resolve
+		// to a GRAS count, and the list ends once the count exceeds iMaxGrassTypesPerTexure (the
+		// engine tests `count > max` before taking each one), so the default of 2 yields 3 types.
+		template <class Visit>
+		void ForEachTextureGrass(const GameData::StaticWorldSnapshot& a_snapshot, const GameData::LandTextureInfo& a_texture, std::uint32_t a_maxTypes,
+			Visit&& a_visit)
+		{
+			std::uint32_t used = 0;
+			for (const auto grassFormID : a_texture.grassFormIDs) {
+				const auto grassIt = a_snapshot.grassesByFormID.find(grassFormID);
+				if (grassIt == a_snapshot.grassesByFormID.end()) {
+					continue;
+				}
+				if (used > a_maxTypes) {
+					break;
+				}
+				++used;
+				if (!grassIt->second.modelPath.empty()) {
+					a_visit(grassIt->second);
+				}
+			}
+		}
+
 		[[nodiscard]] std::vector<GrassParamBuild> BuildGrassParamsForSample(
 			const GameData::StaticWorldSnapshot& a_snapshot,
 			const QuadrantSampleWeights& a_weights,
@@ -445,17 +471,9 @@ namespace FasterNGIO::Grass
 					continue;
 				}
 
-				std::uint32_t grassTypesUsed = 0;
-				for (const auto grassFormID : ltexIt->second.grassFormIDs) {
-					if (grassTypesUsed++ >= a_settings.maxGrassTypesPerTexture) {
-						break;
-					}
-					const auto grassIt = a_snapshot.grassesByFormID.find(grassFormID);
-					if (grassIt == a_snapshot.grassesByFormID.end() || grassIt->second.modelPath.empty()) {
-						continue;
-					}
+				ForEachTextureGrass(a_snapshot, ltexIt->second, a_settings.maxGrassTypesPerTexture, [&](const GameData::GrassInfo& a_grass) {
 					GrassParamBuild param;
-					param.grass = std::addressof(grassIt->second);
+					param.grass = std::addressof(a_grass);
 					float sum = 0.0f;
 					for (int dy = -1; dy <= 1; ++dy) {
 						for (int dx = -1; dx <= 1; ++dx) {
@@ -469,7 +487,7 @@ namespace FasterNGIO::Grass
 					if (sum / 9.0f >= a_settings.alphaThreshold) {
 						params.push_back(param);
 					}
-				}
+				});
 			}
 			return params;
 		}
@@ -484,7 +502,7 @@ namespace FasterNGIO::Grass
 			const GameData::GrassInfo& a_grass,
 			float a_brightness,
 			float a_orientation,
-			SkyrimRng& a_rng)
+			float a_heightRandom)
 		{
 			auto& words = a_blade.words;
 			const auto blockBaseX = static_cast<float>((a_cellX / 12) * 12) * GameData::kSkyrimTerrainCellSize;
@@ -528,7 +546,7 @@ namespace FasterNGIO::Grass
 			words[10] = FloatToHalfBits(basis1[2]);
 			words[11] = FloatToHalfBits(basis2[1]);
 			words[12] = FloatToHalfBits(basis2[2]);
-			words[13] = FloatToHalfBits(RandomUnitSigned(a_rng.Next(0xffffffffu)) * a_grass.heightRange);
+			words[13] = FloatToHalfBits(a_heightRandom * a_grass.heightRange);
 			words[14] = 0;
 			words[15] = 0;
 
@@ -538,8 +556,489 @@ namespace FasterNGIO::Grass
 		}
 	}
 
+	namespace
+	{
+		// ---- Smooth placement -------------------------------------------------------------------
+
+		// Counter-based randomness: order-independent, so smooth placement needs no shared stream.
+		[[nodiscard]] std::uint64_t Mix64(std::uint64_t a_value)
+		{
+			a_value += 0x9e3779b97f4a7c15ull;
+			a_value = (a_value ^ (a_value >> 30)) * 0xbf58476d1ce4e5b9ull;
+			a_value = (a_value ^ (a_value >> 27)) * 0x94d049bb133111ebull;
+			return a_value ^ (a_value >> 31);
+		}
+
+		class CounterRng
+		{
+		public:
+			explicit CounterRng(std::uint64_t a_seed) :
+				_state(Mix64(a_seed)) {}
+
+			// Uniform in [0, 1).
+			[[nodiscard]] float Unit() { return static_cast<float>(Mix64(_state++) >> 40) * (1.0f / 16777216.0f); }
+			// Uniform in [-1, 1).
+			[[nodiscard]] float Signed() { return Unit() * 2.0f - 1.0f; }
+
+		private:
+			std::uint64_t _state;
+		};
+
+		[[nodiscard]] float LatticeValue(std::int32_t a_x, std::int32_t a_y, std::uint32_t a_seed)
+		{
+			const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a_x)) << 32) ^ static_cast<std::uint32_t>(a_y) ^
+			                 (static_cast<std::uint64_t>(a_seed) * 0x632be59bd9b4e019ull);
+			return static_cast<float>(Mix64(key) >> 40) * (2.0f / 16777216.0f) - 1.0f;
+		}
+
+		// Smoothly interpolated value noise in [-1, 1], in world coordinates so it is continuous
+		// across cells.
+		[[nodiscard]] float ValueNoise(float a_x, float a_y, std::uint32_t a_seed)
+		{
+			const auto x0 = static_cast<std::int32_t>(std::floor(a_x));
+			const auto y0 = static_cast<std::int32_t>(std::floor(a_y));
+			const auto smooth = [](float t) { return t * t * (3.0f - 2.0f * t); };
+			const auto fx = smooth(a_x - static_cast<float>(x0));
+			const auto fy = smooth(a_y - static_cast<float>(y0));
+			return Lerp(Lerp(LatticeValue(x0, y0, a_seed), LatticeValue(x0 + 1, y0, a_seed), fx),
+				Lerp(LatticeValue(x0, y0 + 1, a_seed), LatticeValue(x0 + 1, y0 + 1, a_seed), fx), fy);
+		}
+
+		[[nodiscard]] float WarpNoise(float a_x, float a_y, std::uint32_t a_seed)
+		{
+			return 0.65f * ValueNoise(a_x, a_y, a_seed) + 0.35f * ValueNoise(a_x * 2.0f + 17.3f, a_y * 2.0f - 5.1f, a_seed + 101u);
+		}
+
+		[[nodiscard]] float SmoothStep(float a_low, float a_high, float a_value)
+		{
+			if (a_high <= a_low) {
+				return a_value > a_low ? 1.0f : 0.0f;
+			}
+			const auto t = Clamp01((a_value - a_low) / (a_high - a_low));
+			return t * t * (3.0f - 2.0f * t);
+		}
+
+		struct CoverageRamp
+		{
+			float low{ 0.0f };
+			float high{ 0.0f };
+			float bias{ 1.0f };
+
+			// fTexturePctThreshold still applies: weights at or below it never grow grass.
+			explicit CoverageRamp(const PlacementSettings& a_settings) :
+				low((std::max)(a_settings.smooth.coverageLow, std::clamp(a_settings.alphaThreshold, 0.0f, 1.0f))),
+				high((std::max)(a_settings.smooth.coverageHigh, low)),
+				bias(a_settings.smooth.densityBias) {}
+
+			[[nodiscard]] float operator()(float a_weight) const { return (std::min)(1.0f, bias * SmoothStep(low, high, a_weight)); }
+		};
+
+		// Lattice points per cell side for a grass type: vanilla's pitch (iMinGrassSize, GRAS position
+		// range), retiled so whole cells divide evenly and neighbouring cells' lattices meet without
+		// gaps or overlap. Zero when the type places nothing.
+		[[nodiscard]] std::uint32_t SmoothLatticeSide(const GameData::GrassInfo& a_grass, const PlacementSettings& a_settings)
+		{
+			const auto patchDiameter = static_cast<float>(a_settings.grassPatchSize * 2u);
+			const auto countByMinGrass = a_settings.minGrassSize == 0 ? 0u : static_cast<std::uint32_t>(patchDiameter / static_cast<float>(a_settings.minGrassSize));
+			const auto countByPositionRange = a_grass.positionRange <= 0.0f ? 0u : static_cast<std::uint32_t>(patchDiameter / a_grass.positionRange);
+			const auto countSide = (std::min)(countByMinGrass, countByPositionRange);
+			if (countSide == 0 || patchDiameter <= 0.0f) {
+				return 0;
+			}
+			return (std::max)(1u, static_cast<std::uint32_t>(std::lround(GameData::kSkyrimTerrainCellSize * static_cast<float>(countSide) / patchDiameter)));
+		}
+
+		// One grass type's weights over the 3x3 block of cells around the cell being placed (97x97
+		// vertices). A vertex shared by several LANDs holds their mean.
+		constexpr std::size_t kBlockSide = 3 * 32 + 1;
+
+		struct BlockWeightGrid
+		{
+			const GameData::GrassInfo* grass{ nullptr };
+			std::vector<float> weights;
+		};
+
+		[[nodiscard]] std::vector<BlockWeightGrid> BuildBlockWeightGrids(const GameData::StaticWorldSnapshot& a_snapshot, const LandInfo& a_land,
+			const PlacementSettings& a_settings)
+		{
+			const auto* field = a_settings.smooth.field;
+			std::vector<SmoothWeightField::Grid> uncached;
+			std::vector<BlockWeightGrid> result;
+			std::vector<std::uint8_t> coverage(kBlockSide * kBlockSide, 0);
+			std::unordered_map<GameData::FormID, std::size_t, GameData::FormIDHash> indexByGrass;
+			for (int dy = -1; dy <= 1; ++dy) {
+				for (int dx = -1; dx <= 1; ++dx) {
+					const std::vector<SmoothWeightField::Grid>* grids = nullptr;
+					if (field) {
+						grids = field->Find(*a_land.cellX + dx, *a_land.cellY + dy);
+					} else if (dx == 0 && dy == 0) {
+						uncached = BuildSmoothWeightGrids(a_snapshot, a_land, a_settings);
+						grids = &uncached;
+					}
+					if (!grids) {
+						continue;
+					}
+					const auto origin = static_cast<std::size_t>(dy + 1) * 32 * kBlockSide + static_cast<std::size_t>(dx + 1) * 32;
+					for (std::size_t y = 0; y < LandInfo::VertexSide; ++y) {
+						for (std::size_t x = 0; x < LandInfo::VertexSide; ++x) {
+							++coverage[origin + y * kBlockSide + x];
+						}
+					}
+					for (const auto& grid : *grids) {
+						const auto [it, inserted] = indexByGrass.try_emplace(grid.grass->formID, result.size());
+						if (inserted) {
+							result.push_back(BlockWeightGrid{ .grass = grid.grass, .weights = std::vector<float>(kBlockSide * kBlockSide, 0.0f) });
+						}
+						auto& block = result[it->second].weights;
+						for (std::size_t y = 0; y < LandInfo::VertexSide; ++y) {
+							for (std::size_t x = 0; x < LandInfo::VertexSide; ++x) {
+								block[origin + y * kBlockSide + x] += static_cast<float>(grid.weights[y * LandInfo::VertexSide + x]) * (1.0f / 255.0f);
+							}
+						}
+					}
+				}
+			}
+			for (auto& grid : result) {
+				for (std::size_t i = 0; i < grid.weights.size(); ++i) {
+					grid.weights[i] = coverage[i] ? grid.weights[i] / static_cast<float>(coverage[i]) : 0.0f;
+				}
+			}
+			std::ranges::sort(result, [](const BlockWeightGrid& a, const BlockWeightGrid& b) { return a.grass->formID < b.grass->formID; });
+			return result;
+		}
+
+		// a_localX/Y in vertices from the centre cell's origin; reads up to a cell into neighbours.
+		[[nodiscard]] float SampleBlockGrid(const BlockWeightGrid& a_grid, float a_localX, float a_localY)
+		{
+			const auto lx = std::clamp(a_localX + 32.0f, 0.0f, 96.0f);
+			const auto ly = std::clamp(a_localY + 32.0f, 0.0f, 96.0f);
+			const auto x0 = (std::min)(static_cast<int>(lx), 95);
+			const auto y0 = (std::min)(static_cast<int>(ly), 95);
+			const auto fx = lx - static_cast<float>(x0);
+			const auto fy = ly - static_cast<float>(y0);
+			const auto at = [&](int x, int y) { return a_grid.weights[static_cast<std::size_t>(y) * kBlockSide + static_cast<std::size_t>(x)]; };
+			return Lerp(Lerp(at(x0, y0), at(x0 + 1, y0), fx), Lerp(at(x0, y0 + 1), at(x0 + 1, y0 + 1), fx), fy);
+		}
+
+		CellCandidates GenerateSmoothCellCandidates(const GameData::StaticWorldSnapshot& a_snapshot, const LandInfo& a_land, const PlacementSettings& a_settings)
+		{
+			CellCandidates result;
+			const auto cellX = *a_land.cellX;
+			const auto cellY = *a_land.cellY;
+			result.cellX = cellX;
+			result.cellY = cellY;
+			auto& counters = result.counters;
+			const auto& smooth = a_settings.smooth;
+			const CoverageRamp coverageOf(a_settings);
+
+			std::optional<float> waterHeight = a_settings.waterHeight;
+			if (const auto cellIt = a_snapshot.cellsByFormID.find(a_land.parentCell); cellIt != a_snapshot.cellsByFormID.end() && cellIt->second.waterHeight) {
+				waterHeight = *cellIt->second.waterHeight;
+			}
+			const auto cellOriginX = static_cast<float>(cellX) * GameData::kSkyrimTerrainCellSize;
+			const auto cellOriginY = static_cast<float>(cellY) * GameData::kSkyrimTerrainCellSize;
+			const auto blockBaseX = static_cast<float>((cellX / 12) * 12) * GameData::kSkyrimTerrainCellSize;
+			const auto blockBaseY = static_cast<float>((cellY / 12) * 12) * GameData::kSkyrimTerrainCellSize;
+			// The warp field, sampled once per cell every 64 units and interpolated: shared by every grass
+			// type, and far cheaper than evaluating the noise per lattice point.
+			constexpr int kWarpSide = 65;
+			constexpr float kWarpPitch = GameData::kSkyrimTerrainCellSize / static_cast<float>(kWarpSide - 1);
+			const bool warp = smooth.warpAmplitude > 0.0f && smooth.warpWavelength > 0.0f;
+			std::vector<float> warpX;
+			std::vector<float> warpY;
+			if (warp) {
+				warpX.resize(kWarpSide * kWarpSide);
+				warpY.resize(kWarpSide * kWarpSide);
+				for (int j = 0; j < kWarpSide; ++j) {
+					for (int i = 0; i < kWarpSide; ++i) {
+						const auto wx = (cellOriginX + static_cast<float>(i) * kWarpPitch) / smooth.warpWavelength;
+						const auto wy = (cellOriginY + static_cast<float>(j) * kWarpPitch) / smooth.warpWavelength;
+						warpX[j * kWarpSide + i] = WarpNoise(wx, wy, 1u) * smooth.warpAmplitude;
+						warpY[j * kWarpSide + i] = WarpNoise(wx, wy, 2u) * smooth.warpAmplitude;
+					}
+				}
+			}
+			const auto warpAt = [&](const std::vector<float>& a_field, float a_x, float a_y) {
+				const auto gx = std::clamp((a_x - cellOriginX) / kWarpPitch, 0.0f, static_cast<float>(kWarpSide - 1));
+				const auto gy = std::clamp((a_y - cellOriginY) / kWarpPitch, 0.0f, static_cast<float>(kWarpSide - 1));
+				const auto x0 = (std::min)(static_cast<int>(gx), kWarpSide - 2);
+				const auto y0 = (std::min)(static_cast<int>(gy), kWarpSide - 2);
+				const auto fx = gx - static_cast<float>(x0);
+				const auto fy = gy - static_cast<float>(y0);
+				const auto at = [&](int x, int y) { return a_field[static_cast<std::size_t>(y * kWarpSide + x)]; };
+				return Lerp(Lerp(at(x0, y0), at(x0 + 1, y0), fx), Lerp(at(x0, y0 + 1), at(x0 + 1, y0 + 1), fx), fy);
+			};
+
+			for (const auto& grid : BuildBlockWeightGrids(a_snapshot, a_land, a_settings)) {
+				const auto& grass = *grid.grass;
+				// Skip types with no coverage within a vertex of this cell.
+				bool present = false;
+				for (std::size_t y = 31; y <= 65 && !present; ++y) {
+					for (std::size_t x = 31; x <= 65; ++x) {
+						if (grid.weights[y * kBlockSide + x] > coverageOf.low) {
+							present = true;
+							break;
+						}
+					}
+				}
+				if (!present) {
+					continue;
+				}
+				const auto latticeSide = SmoothLatticeSide(grass, a_settings);
+				if (latticeSide == 0) {
+					continue;
+				}
+				const auto step = GameData::kSkyrimTerrainCellSize / static_cast<float>(latticeSide);
+				const auto groupIndex = static_cast<std::uint32_t>(result.groups.size());
+				result.groups.push_back(CellGrassGroup{ .grass = std::addressof(grass), .modelPath = GameData::NormalizeModelPath(grass.modelPath) });
+				CounterRng rng((static_cast<std::uint64_t>(static_cast<std::uint32_t>(cellX)) << 32) ^ static_cast<std::uint32_t>(cellY) ^
+				               (static_cast<std::uint64_t>(grass.formID.value) * 0x9e3779b97f4a7c15ull));
+				const auto density = static_cast<float>(grass.density) * 0.01f * (smooth.field ? smooth.field->DensityScale(grass.formID) : 1.0f);
+
+				for (std::uint32_t latticeY = 0; latticeY < latticeSide; ++latticeY) {
+					for (std::uint32_t latticeX = 0; latticeX < latticeSide; ++latticeX) {
+						++counters.latticeCandidates;
+						auto x = cellOriginX + (static_cast<float>(latticeX) + 0.5f + rng.Signed() * 0.5f) * step;
+						auto y = cellOriginY + (static_cast<float>(latticeY) + 0.5f + rng.Signed() * 0.5f) * step;
+						const auto accept = rng.Unit();
+						// Coverage never exceeds 1, so most rejections need no weight lookup.
+						if (accept >= density) {
+							++counters.densityRejected;
+							continue;
+						}
+						float lookupX = x;
+						float lookupY = y;
+						if (warp) {
+							lookupX += warpAt(warpX, x, y);
+							lookupY += warpAt(warpY, x, y);
+						}
+						const auto weight = SampleBlockGrid(grid, (lookupX - cellOriginX) / 128.0f, (lookupY - cellOriginY) / 128.0f);
+						if (accept >= density * coverageOf(weight)) {
+							++counters.densityRejected;
+							continue;
+						}
+						x = blockBaseX + HalfBitsToFloat(FloatToHalfBits(x - blockBaseX));
+						y = blockBaseY + HalfBitsToFloat(FloatToHalfBits(y - blockBaseY));
+						const auto terrain = SampleTerrain(a_land, x, y);
+						if (waterHeight && !PassesWaterFilter(grass, terrain.height, *waterHeight)) {
+							++counters.waterRejected;
+							continue;
+						}
+						if (!PassesSlopeFilter(grass, terrain)) {
+							++counters.slopeRejected;
+							continue;
+						}
+						const auto colorRandom = rng.Signed() * grass.colorRange;
+						const auto brightness = Clamp01(
+							(terrain.color[0] * 0.299f + terrain.color[1] * 0.587f + terrain.color[2] * 0.114f) * (1.0f - grass.colorRange + colorRandom));
+						const auto orientation = rng.Signed();
+						const auto heightRandom = rng.Signed();
+						auto& blade = result.blades.emplace_back();
+						blade.groupIndex = groupIndex;
+						EncodeBlade(blade, cellX, cellY, x, y, terrain, grass, brightness, orientation, heightRandom);
+						++counters.bladesPlaced;
+					}
+				}
+			}
+			return result;
+		}
+	}
+
+	std::vector<SmoothWeightField::Grid> BuildSmoothWeightGrids(const GameData::StaticWorldSnapshot& a_snapshot, const LandInfo& a_land, const PlacementSettings& a_settings)
+	{
+		const auto quadrantWeights = BuildVanillaQuadrantWeights(a_land);
+		std::array<std::uint8_t, LandInfo::VertexCount> coverage{};
+		std::vector<std::array<float, LandInfo::VertexCount>> sums;
+		std::vector<SmoothWeightField::Grid> grids;
+		std::unordered_map<GameData::FormID, std::size_t, GameData::FormIDHash> gridByGrass;
+		std::unordered_map<GameData::FormID, std::vector<std::size_t>, GameData::FormIDHash> gridsByTexture;
+		const auto gridsFor = [&](GameData::FormID a_texture) -> const std::vector<std::size_t>& {
+			if (const auto it = gridsByTexture.find(a_texture); it != gridsByTexture.end()) {
+				return it->second;
+			}
+			std::vector<std::size_t> indices;
+			if (const auto ltexIt = a_snapshot.landTexturesByFormID.find(a_texture); ltexIt != a_snapshot.landTexturesByFormID.end()) {
+				ForEachTextureGrass(a_snapshot, ltexIt->second, a_settings.maxGrassTypesPerTexture, [&](const GameData::GrassInfo& a_grass) {
+					const auto [gridIt, inserted] = gridByGrass.try_emplace(a_grass.formID, grids.size());
+					if (inserted) {
+						grids.push_back(SmoothWeightField::Grid{ .grass = std::addressof(a_grass) });
+						sums.emplace_back().fill(0.0f);
+					}
+					if (std::ranges::find(indices, gridIt->second) == indices.end()) {
+						indices.push_back(gridIt->second);
+					}
+				});
+			}
+			return gridsByTexture.emplace(a_texture, std::move(indices)).first->second;
+		};
+
+		// Shared quadrant-edge vertices average the quadrants' weights, so the four quadrants'
+		// independent layer sets do not produce seams.
+		for (std::uint8_t quadrant = 0; quadrant < LandInfo::QuadrantCount; ++quadrant) {
+			const auto baseX = (quadrant & 1u) ? 16u : 0u;
+			const auto baseY = (quadrant & 2u) ? 16u : 0u;
+			for (std::size_t y = 0; y < LandInfo::QuadrantVertexSide; ++y) {
+				for (std::size_t x = 0; x < LandInfo::QuadrantVertexSide; ++x) {
+					const auto vertex = (baseY + y) * LandInfo::VertexSide + baseX + x;
+					++coverage[vertex];
+					for (const auto& sample : quadrantWeights[quadrant][y * LandInfo::QuadrantVertexSide + x]) {
+						for (const auto grid : gridsFor(sample.formID)) {
+							sums[grid][vertex] += sample.weight;
+						}
+					}
+				}
+			}
+		}
+		for (std::size_t g = 0; g < grids.size(); ++g) {
+			for (std::size_t vertex = 0; vertex < LandInfo::VertexCount; ++vertex) {
+				const auto weight = coverage[vertex] ? Clamp01(sums[g][vertex] / static_cast<float>(coverage[vertex])) : 0.0f;
+				grids[g].weights[vertex] = static_cast<std::uint8_t>(std::lround(weight * 255.0f));
+			}
+		}
+		std::ranges::sort(grids, [](const SmoothWeightField::Grid& a, const SmoothWeightField::Grid& b) { return a.grass->formID < b.grass->formID; });
+		return grids;
+	}
+
+	namespace
+	{
+		// Expected blades of one LAND per grass type, before the water and slope filters (which both
+		// modes apply alike): vanilla's exact lattice sum, and smooth placement's coverage integrated
+		// over the cell (without the warp, which only moves weight around).
+		[[nodiscard]] std::vector<std::pair<GameData::FormID, SmoothWeightField::ExpectedBlades>> ExpectedLandBlades(
+			const GameData::StaticWorldSnapshot& a_snapshot,
+			const LandInfo& a_land,
+			std::span<const SmoothWeightField::Grid> a_grids,
+			const PlacementSettings& a_settings)
+		{
+			std::vector<std::pair<GameData::FormID, SmoothWeightField::ExpectedBlades>> result;
+			const auto entry = [&](GameData::FormID a_grass) -> SmoothWeightField::ExpectedBlades& {
+				const auto it = std::ranges::find_if(result, [&](const auto& e) { return e.first == a_grass; });
+				return it != result.end() ? it->second : result.emplace_back(a_grass, SmoothWeightField::ExpectedBlades{}).second;
+			};
+
+			// Vanilla: each lattice point accepts with the bilinear density of its patch's 3x3 grid. The
+			// sum over a patch separates into per-axis sums of the three hat functions.
+			const auto quadrantWeights = BuildVanillaQuadrantWeights(a_land);
+			const auto evalStep = (std::max<std::uint32_t>)(1u, a_settings.grassEvalSize * 2u);
+			const auto patchDiameter = static_cast<float>(a_settings.grassPatchSize * 2u);
+			for (std::uint8_t quadrant = 0; quadrant < LandInfo::QuadrantCount; ++quadrant) {
+				for (std::uint32_t vertexX = a_settings.grassEvalSize; vertexX < 16u; vertexX += evalStep) {
+					for (std::uint32_t vertexY = a_settings.grassEvalSize; vertexY < 16u; vertexY += evalStep) {
+						const auto sample = static_cast<std::size_t>(vertexY) * LandInfo::QuadrantVertexSide + vertexX;
+						for (const auto& param : BuildGrassParamsForSample(a_snapshot, quadrantWeights, quadrant, sample, a_settings)) {
+							const auto countByMinGrass = a_settings.minGrassSize == 0 ? 0u : static_cast<std::uint32_t>(patchDiameter / static_cast<float>(a_settings.minGrassSize));
+							const auto countByPositionRange = param.grass->positionRange <= 0.0f ? 0u : static_cast<std::uint32_t>(patchDiameter / param.grass->positionRange);
+							const auto countSide = (std::min)(countByMinGrass, countByPositionRange);
+							if (countSide == 0) {
+								continue;
+							}
+							std::array<double, 3> hat{};
+							for (std::uint32_t i = 0; i < countSide; ++i) {
+								const auto u = (static_cast<double>(i) + 0.5) * (2.0 / static_cast<double>(countSide));
+								hat[0] += (std::max)(0.0, 1.0 - u);
+								hat[1] += 1.0 - std::abs(u - 1.0);
+								hat[2] += (std::max)(0.0, u - 1.0);
+							}
+							double blades = 0.0;
+							for (std::size_t b = 0; b < 3; ++b) {
+								for (std::size_t a = 0; a < 3; ++a) {
+									blades += static_cast<double>(param.density[b * 3 + a]) * hat[a] * hat[b];
+								}
+							}
+							entry(param.grass->formID).vanilla += blades;
+						}
+					}
+				}
+			}
+
+			// Smooth: lattice points per cell times the cell's mean acceptance, from 64x64 samples.
+			const CoverageRamp coverageOf(a_settings);
+			for (const auto& grid : a_grids) {
+				const auto latticeSide = SmoothLatticeSide(*grid.grass, a_settings);
+				if (latticeSide == 0) {
+					continue;
+				}
+				double sum = 0.0;
+				for (int sy = 0; sy < 64; ++sy) {
+					const auto ly = (static_cast<float>(sy) + 0.5f) * 0.5f;
+					const auto y0 = (std::min)(static_cast<int>(ly), 31);
+					const auto fy = ly - static_cast<float>(y0);
+					for (int sx = 0; sx < 64; ++sx) {
+						const auto lx = (static_cast<float>(sx) + 0.5f) * 0.5f;
+						const auto x0 = (std::min)(static_cast<int>(lx), 31);
+						const auto fx = lx - static_cast<float>(x0);
+						const auto at = [&](int x, int y) { return static_cast<float>(grid.weights[static_cast<std::size_t>(y) * LandInfo::VertexSide + static_cast<std::size_t>(x)]) * (1.0f / 255.0f); };
+						sum += coverageOf(Lerp(Lerp(at(x0, y0), at(x0 + 1, y0), fx), Lerp(at(x0, y0 + 1), at(x0 + 1, y0 + 1), fx), fy));
+					}
+				}
+				const auto density = static_cast<double>(grid.grass->density) * 0.01;
+				entry(grid.grass->formID).smooth += density * (sum / (64.0 * 64.0)) * static_cast<double>(latticeSide) * static_cast<double>(latticeSide);
+			}
+			return result;
+		}
+	}
+
+	SmoothWeightField::SmoothWeightField(const GameData::StaticWorldSnapshot& a_snapshot, std::span<const LandInfo> a_worldLands,
+		const PlacementSettings& a_settings)
+	{
+		// The first LAND of a cell wins, as everywhere else.
+		std::vector<std::pair<std::uint64_t, const LandInfo*>> work;
+		std::unordered_set<std::uint64_t> seen;
+		for (const auto& land : a_worldLands) {
+			if (land.cellX && land.cellY && land.hasHeights) {
+				const auto cell = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(*land.cellX)) << 32) | static_cast<std::uint32_t>(*land.cellY);
+				if (seen.insert(cell).second) {
+					work.emplace_back(cell, std::addressof(land));
+				}
+			}
+		}
+		std::vector<std::vector<Grid>> built(work.size());
+		// Expected blades per land and grass type, reduced after the parallel pass (no shared state).
+		using Expectations = std::vector<std::pair<GameData::FormID, ExpectedBlades>>;
+		std::vector<Expectations> expected(a_settings.smooth.matchVanillaDensity ? work.size() : 0);
+		oneapi::tbb::parallel_for(std::size_t{ 0 }, work.size(), [&](std::size_t i) {
+			built[i] = BuildSmoothWeightGrids(a_snapshot, *work[i].second, a_settings);
+			if (a_settings.smooth.matchVanillaDensity) {
+				expected[i] = ExpectedLandBlades(a_snapshot, *work[i].second, built[i], a_settings);
+			}
+		});
+		_grids.reserve(work.size());
+		for (std::size_t i = 0; i < work.size(); ++i) {
+			_gridCount += built[i].size();
+			_grids.emplace(work[i].first, std::move(built[i]));
+		}
+		for (const auto& land : expected) {
+			for (const auto& [grass, blades] : land) {
+				auto& total = _expected[grass];
+				total.vanilla += blades.vanilla;
+				total.smooth += blades.smooth;
+			}
+		}
+		for (const auto& [grass, total] : _expected) {
+			if (total.smooth > 0.0 && total.vanilla > 0.0) {
+				// Bounded so a type that barely appears in one mode cannot run away.
+				_densityScale.emplace(grass, static_cast<float>(std::clamp(total.vanilla / total.smooth, 0.25, 4.0)));
+			}
+		}
+	}
+
+	float SmoothWeightField::DensityScale(GameData::FormID a_grass) const
+	{
+		const auto it = _densityScale.find(a_grass);
+		return it != _densityScale.end() ? it->second : 1.0f;
+	}
+
+	const std::vector<SmoothWeightField::Grid>* SmoothWeightField::Find(std::int32_t a_cellX, std::int32_t a_cellY) const
+	{
+		const auto it = _grids.find((static_cast<std::uint64_t>(static_cast<std::uint32_t>(a_cellX)) << 32) | static_cast<std::uint32_t>(a_cellY));
+		return it != _grids.end() ? &it->second : nullptr;
+	}
+
 	CellCandidates GenerateCellCandidates(const GameData::StaticWorldSnapshot& a_snapshot, const LandInfo& a_land, const PlacementSettings& a_settings)
 	{
+		if (a_settings.mode == PlacementMode::Smooth && a_land.cellX && a_land.cellY && a_land.hasHeights) {
+			return GenerateSmoothCellCandidates(a_snapshot, a_land, a_settings);
+		}
 		CellCandidates result;
 		if (!a_land.cellX || !a_land.cellY || !a_land.hasHeights) {
 			return result;
@@ -641,9 +1140,10 @@ namespace FasterNGIO::Grass
 								const auto brightness = Clamp01(
 									(terrain.color[0] * 0.299f + terrain.color[1] * 0.587f + terrain.color[2] * 0.114f) * (1.0f - grass.colorRange + colorRandom));
 								const auto orientation = RandomUnitSigned(rng.Next(0xffffffffu));
+								const auto heightRandom = RandomUnitSigned(rng.Next(0xffffffffu));
 								auto& blade = result.blades.emplace_back();
 								blade.groupIndex = groupIndex;
-								EncodeBlade(blade, cellX, cellY, x, y, terrain, grass, brightness, orientation, rng);
+								EncodeBlade(blade, cellX, cellY, x, y, terrain, grass, brightness, orientation, heightRandom);
 								++counters.bladesPlaced;
 							}
 						}

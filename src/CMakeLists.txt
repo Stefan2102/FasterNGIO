@@ -11,12 +11,16 @@ add_library(FasterNGIOCore STATIC
 	GameData/ModelPathNormalization.cpp
 	GameData/PluginFileReader.cpp
 	GameData/Internal/PluginFileReader.h
+	Grass/GameIni.cpp
+	Grass/GameIni.h
 	Grass/NgioCacheWriter.cpp
 	Grass/NgioCacheWriter.h
 	Grass/Placement.cpp
 	Grass/Placement.h
 	Platform/DataDirectory.cpp
 	Platform/DataDirectory.h
+	Platform/IniFile.cpp
+	Platform/IniFile.h
 	Rejection/CpuBvh.cpp
 	Rejection/CpuBvh.h
 	Rejection/CpuReference.cpp
@@ -39,6 +43,7 @@ target_link_libraries(FasterNGIOCore
 	PRIVATE
 		ZLIB::ZLIB
 		lz4::lz4
+		$<$<PLATFORM_ID:Windows>:Shell32 Ole32>
 )
 
 if(FASTERNGIO_ENABLE_GPU)

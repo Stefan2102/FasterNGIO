@@ -10,14 +10,15 @@ or CommonLibSSE.
 | Path | Contents |
 |---|---|
 | `src/GameData/` | Plugin (ESM/ESP/ESL) parsing, load order, static world snapshot. Copied from SARP; adds OBND and FLOR/SCOL/TACT. |
-| `src/Grass/` | Vanilla grass placement (engine RNG emulation) split into `GenerateCellCandidates` and `FinalizeCell`; the `.cgid` writer. |
+| `src/Grass/` | Grass placement split into `GenerateCellCandidates` and `FinalizeCell`: vanilla (engine RNG emulation) and smooth (`SmoothWeightField`); the game's `[Grass]` INI settings (`GameIni`); the `.cgid` writer. |
 | `src/Archives/` | Memory-mapped BSA (v103/104/105) reader and load-order-aware resolver (loose files win). |
-| `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows). |
+| `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows); `IniFile`. |
 | `src/Collision/` | nifly-based Havok collision extraction (CMS, packed strips, convex hulls, boxes, spheres, capsules) into model space. |
 | `src/Rejection/` | NGIO query shapes, the per-world instance index, the CPU BVH fallback (`CpuBvh`) and the brute-force reference. |
 | `src/Gpu/` | `GpuRejector`: feature check, the render thread (OpenRenderGraph `PersistentGraphHost`), BLAS/TLAS, ray-tracing pipeline, one DispatchRays per frame, readback. |
 | `src/Pipeline/` | Lock-free cell pipeline on ORGModuleServices' AsyncStateGraph; TBB graph scheduler; MPSC queue. |
 | `shaders/` | `GrassRejection.hlsl` (DXIL for D3D12, SPIR-V for Vulkan) and `Shared/GrassQueryMath.hlsli`, which the CPU paths also compile (`src/Rejection/HlslShim.h`). |
+| `tools/` | `analyze_placement_edges.py`: grid-locking and corner statistics of `--export-blades` output, with a grid-free control. |
 | `external/` | Submodules: BasicRHI, OpenRenderGraph, ORGModuleServices, BasicTelemetry, volk (pinned to BasicRenderer's commits) and upstream nifly. |
 
 ## Build and test
@@ -44,9 +45,21 @@ runtime (`dxcompiler.dll`/`dxil.dll`, `libdxcompiler.so`) are deployed next to t
 
 ## Load-bearing rules
 
-- **Parity.** With `--reject none`, output must stay byte-identical to SARP's
-  `SARPGrassCacheGenerator --paint vanilla`, and Linux output byte-identical to Windows output.
-  Placement changes must preserve the engine's RNG draw order.
+- **Parity.** With `--placement vanilla --reject none`, output reproduces the engine and must not
+  drift. It matches SARP's `SARPGrassCacheGenerator --paint vanilla` byte for byte except where a land
+  texture carries more grass types than `iMaxGrassTypesPerTexure`: the engine tests `count > max`
+  before taking each one (so the default of 2 takes 3; confirmed in the disassembly), SARP stops at
+  `max`. Vanilla changes must preserve the engine's RNG draw order. Linux output (both placements)
+  must stay byte-identical to Windows output.
+- **Game settings.** Only settings that change placement are read: `iMinGrassSize`,
+  `iMaxGrassTypesPerTexure`, `fTexturePctThreshold`, all in the engine's Skyrim.ini collection, which
+  loads `Skyrim.ini` then `SkyrimCustom.ini` (`SkyrimPrefs.ini` feeds only the prefs collection). The
+  engine reads them through the Win32 profile API: first occurrence of a key wins, values parse as
+  their leading number. Engine defaults, then INIs, then command-line values.
+- **Smooth placement is seam-free and calibrated.** Weights merge every shared vertex (quadrants and
+  cells), blades read them at their own position, and the per-type density scale is computed over the
+  whole worldspace, never the selected cells, so a cell is identical whatever a run selects. Judge
+  placement changes with `tools/analyze_placement_edges.py` against vanilla and the null control.
 - **Rejection is a post-filter.** NGIO's own hook skips the colour/orientation/height RNG draws for a
   rejected blade; FasterNGIO deliberately keeps the vanilla layout and only drops blades.
 - **One source of geometric truth.** Exact overlap tests live in `shaders/Shared/GrassQueryMath.hlsli`
@@ -56,8 +69,8 @@ runtime (`dxcompiler.dll`/`dxil.dll`, `libdxcompiler.so`) are deployed next to t
   posted and throws `GpuUnsupportedError` listing what is missing; `--reject auto` then uses the CPU
   BVH. Add any new GPU requirement to that check.
 - **No locks on the hot paths.** Workers and the render thread communicate through the AsyncStateGraph
-  (producers, GPU submission tokens, capacity suspensions) and `Pipeline::MpscQueue`. The CPU BVH and
-  `DataDirectory` are immutable after construction. Do not add mutexes or condition variables to the
+  (producers, GPU submission tokens, capacity suspensions) and `Pipeline::MpscQueue`. The CPU BVH,
+  `SmoothWeightField` and `DataDirectory` are built up front and immutable afterwards. Do not add mutexes or condition variables to the
   cell pipeline, `GpuRejector` or the rejection structures.
 - **DXR payload.** The hit result is written by the closest-hit and miss shaders. Do not reintroduce
   `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and rely on the payload surviving a traversal that runs neither:
@@ -73,6 +86,8 @@ runtime (`dxcompiler.dll`/`dxil.dll`, `libdxcompiler.so`) are deployed next to t
 - `FASTERNGIO_DEBUG_CANDIDATE=<frame-global candidate index>` compiles shader debug capture in and logs
   every raygen/intersection invocation for that candidate. Use with `--cell` so the index is the cell's
   query index.
+- `--export-blades <file>` writes every placed blade (x, y, grass form ID) for the selected cells;
+  `tools/analyze_placement_edges.py` measures it.
 - `--collision-survey` and `--dump-collision <model> <obj>` inspect collision extraction;
   `FASTERNGIO_SURVEY_DUMP=<file>` makes the survey write per-model primitive counts for diffing builds
   or platforms.

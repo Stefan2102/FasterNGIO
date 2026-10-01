@@ -14,6 +14,22 @@ placement and NGIO `[RayCastConfig]` options. On Linux it runs natively (no Prot
 resolved case-insensitively as the game does, and `--plugins` defaults to the Steam Proton prefix's
 `plugins.txt`.
 
+Grass settings come from the game's INIs, as the game would read them: `iMinGrassSize`,
+`iMaxGrassTypesPerTexure` and `fTexturePctThreshold` from `[Grass]` in `Skyrim.ini` then
+`SkyrimCustom.ini`. They're read from the MO2 profile when it uses profile-specific INIs, otherwise from
+`My Games\Skyrim Special Edition` (which MO2's virtual filesystem also redirects). `--game-ini-dir`
+picks the folder, `--no-game-ini` ignores the INIs, and the matching command-line options override
+them.
+
+Placement (`--placement`):
+
+- `vanilla` (default): the engine's own algorithm. Its grass follows the terrain's 512-unit patch,
+  quadrant and cell grids, which is where the blocky edges and straight seams come from.
+- `smooth`: each blade's density comes from the texture weights at its own position, merged across
+  quadrants and cells and interpolated, so edges follow the painted terrain instead of the grids.
+  Each grass type is scaled so its total over the worldspace matches vanilla's (within a couple of
+  percent). `--smooth-density-bias`, `--smooth-coverage` and `--smooth-warp` tune how blends look.
+
 Rejection backends (`--reject`):
 
 - `auto` (default): the GPU when it supports everything the ray-tracing path needs (shader model

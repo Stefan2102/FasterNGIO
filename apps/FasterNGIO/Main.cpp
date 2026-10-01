@@ -2,6 +2,7 @@
 #include "Collision/NifCollisionExtractor.h"
 #include "Collision/ObjExport.h"
 #include "GameData/GameData.h"
+#include "Grass/GameIni.h"
 #include "Grass/NgioCacheWriter.h"
 #include "Grass/Placement.h"
 #include "Pipeline/CellPipeline.h"
@@ -81,11 +82,18 @@ namespace
 		std::optional<std::int32_t> centerCellY;
 		std::optional<std::int32_t> radius;
 		Grass::PlacementSettings placement;
+		// Command-line values for settings the game's INIs also provide; these override the INIs.
+		std::optional<std::uint32_t> cliMaxGrassTypes;
+		std::optional<std::uint32_t> cliMinGrassSize;
+		std::optional<float> cliAlphaThreshold;
+		std::optional<std::filesystem::path> gameIniDirectory;
+		bool readGameIni{ true };
 		std::uint32_t threads{ 0 };
 		bool explicitGrassPatchSize{ false };
 		bool overwrite{ false };
 		bool collisionSurvey{ false };
 		bool benchmarkRejection{ false };
+		std::filesystem::path exportBladesPath;
 		RejectChoice rejection{ RejectChoice::Auto };
 		bool validateCpu{ false };
 		bool gpuDebugLayer{ false };
@@ -161,12 +169,22 @@ namespace
 			"  --world <form-id>             Worldspace form ID, default 0x3C (Tamriel)\n"
 			"  --cell <x> <y>                Write one cell\n"
 			"  --radius <x> <y> <r>          Write cells within a square cell radius\n"
-			"  --max-grass-types <n>         Max GRAS records considered per LTEX, default 2\n"
+			"  --max-grass-types <n>         iMaxGrassTypesPerTexure (the engine takes n + 1 per LTEX), default 2\n"
 			"  --min-grass-size <n>          iMinGrassSize, default 20\n"
 			"  --grass-patch-size <n>        Grass patch radius, default grass-eval-size * 128\n"
 			"  --grass-eval-size <n>         Grass eval size, default 2\n"
-			"  --alpha-threshold <f>         Landscape alpha threshold, default 0\n"
+			"  --alpha-threshold <f>         fTexturePctThreshold, default 0\n"
 			"  --water-height <f>            Cell water height fallback\n"
+			"  --placement <vanilla|smooth>  vanilla (default) reproduces the engine; smooth evaluates a continuous,\n"
+			"                                seam-free texture-weight field at every blade\n"
+			"  --smooth-coverage <lo> <hi>   Smooth: texture weight ramp from no grass to full density (0.05 0.5)\n"
+			"  --smooth-density-bias <f>     Smooth: coverage multiplier before the cap at full density, shifting\n"
+			"                                grass from texture cores into blends (1.6; 1 is proportional to weight)\n"
+			"  --smooth-no-density-match     Smooth: do not scale each grass type to vanilla's worldspace total\n"
+			"  --smooth-warp <amp> <wave>    Smooth: domain warp amplitude and wavelength in units (96 512; 0 off)\n"
+			"  --game-ini-dir <dir>          Read the [Grass] settings from this folder's Skyrim.ini/SkyrimCustom.ini.\n"
+			"                                Default: the MO2 profile (if it uses local INIs), else My Games\n"
+			"  --no-game-ini                 Ignore the game's INIs; use engine defaults and command-line values\n"
 			"  --threads <n>                 Worker thread count, default all cores\n"
 			"  --overwrite                   Rebuild cache files that already exist\n"
 			"\n"
@@ -184,6 +202,8 @@ namespace
 			"\n"
 			"Diagnostics:\n"
 			"  --collision-survey            Extract the collision of every model the world references and report it\n"
+			"  --export-blades <file>        Write every selected cell's placed blades (x, y: float32, grass form ID:\n"
+			"                                uint32) before rejection, for offline analysis; writes no caches\n"
 			"  --benchmark-rejection         Place every selected cell in memory, then time the CPU BVH (all threads\n"
 			"                                and one) and, when available, the GPU on the same queries; writes nothing\n"
 			"  --dump-collision <model> <obj> Write one model's grass-rejecting collision as OBJ\n",
@@ -223,9 +243,9 @@ namespace
 				options.centerCellY = ParseI32(requireValue(arg));
 				options.radius = ParseI32(requireValue(arg));
 			} else if (arg == "--max-grass-types") {
-				options.placement.maxGrassTypesPerTexture = ParseU32(requireValue(arg));
+				options.cliMaxGrassTypes = ParseU32(requireValue(arg));
 			} else if (arg == "--min-grass-size") {
-				options.placement.minGrassSize = ParseU32(requireValue(arg));
+				options.cliMinGrassSize = ParseU32(requireValue(arg));
 			} else if (arg == "--grass-patch-size") {
 				options.placement.grassPatchSize = ParseU32(requireValue(arg));
 				options.explicitGrassPatchSize = true;
@@ -235,7 +255,7 @@ namespace
 					options.placement.grassPatchSize = options.placement.grassEvalSize << 7;
 				}
 			} else if (arg == "--alpha-threshold") {
-				options.placement.alphaThreshold = std::stof(std::string(requireValue(arg)));
+				options.cliAlphaThreshold = std::stof(std::string(requireValue(arg)));
 			} else if (arg == "--water-height") {
 				options.placement.waterHeight = std::stof(std::string(requireValue(arg)));
 			} else if (arg == "--threads") {
@@ -295,6 +315,31 @@ namespace
 				options.rejectionConfig.rayWidth = std::stof(std::string(requireValue(arg)));
 			} else if (arg == "--ray-width-mult") {
 				options.rejectionConfig.rayWidthMultiplier = std::stof(std::string(requireValue(arg)));
+			} else if (arg == "--placement") {
+				const auto value = requireValue(arg);
+				if (value == "vanilla") {
+					options.placement.mode = Grass::PlacementMode::Vanilla;
+				} else if (value == "smooth") {
+					options.placement.mode = Grass::PlacementMode::Smooth;
+				} else {
+					throw std::invalid_argument("expected --placement vanilla or smooth");
+				}
+			} else if (arg == "--smooth-coverage") {
+				options.placement.smooth.coverageLow = std::stof(std::string(requireValue(arg)));
+				options.placement.smooth.coverageHigh = std::stof(std::string(requireValue(arg)));
+			} else if (arg == "--smooth-no-density-match") {
+				options.placement.smooth.matchVanillaDensity = false;
+			} else if (arg == "--smooth-density-bias") {
+				options.placement.smooth.densityBias = std::stof(std::string(requireValue(arg)));
+			} else if (arg == "--game-ini-dir") {
+				options.gameIniDirectory = std::filesystem::path(requireValue(arg));
+			} else if (arg == "--no-game-ini") {
+				options.readGameIni = false;
+			} else if (arg == "--smooth-warp") {
+				options.placement.smooth.warpAmplitude = std::stof(std::string(requireValue(arg)));
+				options.placement.smooth.warpWavelength = std::stof(std::string(requireValue(arg)));
+			} else if (arg == "--export-blades") {
+				options.exportBladesPath = requireValue(arg);
 			} else if (arg == "--benchmark-rejection") {
 				options.benchmarkRejection = true;
 			} else if (arg == "--collision-survey") {
@@ -313,7 +358,8 @@ namespace
 		if (options.pluginsTxtPath.empty()) {
 			throw std::invalid_argument("--plugins is required: no default plugins.txt location is known");
 		}
-		if (options.outputDirectory.empty() && !options.collisionSurvey && !options.benchmarkRejection && options.dumpCollisionModel.empty()) {
+		if (options.outputDirectory.empty() && !options.collisionSurvey && !options.benchmarkRejection && options.exportBladesPath.empty() &&
+			options.dumpCollisionModel.empty()) {
 			throw std::invalid_argument("--out is required");
 		}
 		return options;
@@ -553,11 +599,39 @@ namespace
 	}
 
 
+	// Placement only (no rejection, no caches): every blade of the selected cells, for offline analysis.
+	int ExportBlades(const CliOptions& a_options, const Grass::PlacementSettings& a_placement, const GameData::StaticWorldSnapshot& a_snapshot,
+		std::span<const GameData::LandInfo* const> a_lands)
+	{
+		const auto begin = std::chrono::steady_clock::now();
+		std::vector<Grass::CellCandidates> cells(a_lands.size());
+		oneapi::tbb::parallel_for(std::size_t{ 0 }, cells.size(), [&](std::size_t i) {
+			cells[i] = Grass::GenerateCellCandidates(a_snapshot, *a_lands[i], a_placement);
+		});
+		std::ofstream output(a_options.exportBladesPath, std::ios::binary);
+		if (!output) {
+			throw std::runtime_error("cannot write " + a_options.exportBladesPath.string());
+		}
+		std::uint64_t blades = 0;
+		for (const auto& cell : cells) {
+			for (const auto& blade : cell.blades) {
+				const float xy[2]{ blade.position[0], blade.position[1] };
+				const std::uint32_t grass = cell.groups[blade.groupIndex].grass->formID.value;
+				output.write(reinterpret_cast<const char*>(xy), sizeof(xy));
+				output.write(reinterpret_cast<const char*>(&grass), sizeof(grass));
+				++blades;
+			}
+		}
+		spdlog::info("exported {} blade(s) from {} cell(s) to {} in {:.2f}s", blades, cells.size(), a_options.exportBladesPath.string(), SecondsSince(begin));
+		return 0;
+	}
+
 	using ShapeMap = std::unordered_map<GameData::FormID, Rejection::QueryShape, GameData::FormIDHash>;
 
 	// Rejection throughput without placement or file writing in the measurement: every cell is
 	// placed up front, then the same queries go through each backend.
-	int BenchmarkRejection(const CliOptions& a_options, const GameData::StaticWorldSnapshot& a_snapshot, std::span<const GameData::LandInfo* const> a_lands,
+	int BenchmarkRejection([[maybe_unused]] const CliOptions& a_options, const Grass::PlacementSettings& a_placement, const GameData::StaticWorldSnapshot& a_snapshot,
+		std::span<const GameData::LandInfo* const> a_lands,
 		const ShapeMap& a_shapesByGrass, std::shared_ptr<const Rejection::WorldIndex> a_world, [[maybe_unused]] void* a_gpu)
 	{
 		struct Cell
@@ -570,7 +644,7 @@ namespace
 		auto begin = std::chrono::steady_clock::now();
 		oneapi::tbb::parallel_for(std::size_t{ 0 }, cells.size(), [&](std::size_t i) {
 			auto& cell = cells[i];
-			cell.candidates = Grass::GenerateCellCandidates(a_snapshot, *a_lands[i], a_options.placement);
+			cell.candidates = Grass::GenerateCellCandidates(a_snapshot, *a_lands[i], a_placement);
 			for (const auto& group : cell.candidates.groups) {
 				cell.shapes.push_back(a_shapesByGrass.at(group.grass->formID));
 			}
@@ -731,6 +805,42 @@ namespace
 		return 0;
 	}
 
+	// Engine defaults, then the game's INIs (as the game would read them), then command-line values.
+	[[nodiscard]] Grass::PlacementSettings ResolvePlacementSettings(const CliOptions& a_options)
+	{
+		auto settings = a_options.placement;
+		if (a_options.readGameIni) {
+			if (const auto directory = Grass::LocateGameIniDirectory(a_options.pluginsTxtPath, a_options.gameIniDirectory)) {
+				const auto ini = Grass::ReadGrassIniSettings(directory->path);
+				Grass::ApplyGrassIniSettings(ini, settings);
+				if (ini.filesRead.empty()) {
+					spdlog::info("game INI: no Skyrim.ini in {} ({}); using engine defaults", directory->path.string(), directory->origin);
+				} else {
+					spdlog::info("game INI: {} ({})", directory->path.string(), directory->origin);
+				}
+				const auto describe = [](const auto& a_value) { return a_value ? std::format("{} ({})", a_value->value, a_value->source.filename().string()) : std::string("engine default"); };
+				spdlog::info("game INI [Grass]: iMinGrassSize={} iMaxGrassTypesPerTexure={} fTexturePctThreshold={}", describe(ini.minGrassSize),
+					describe(ini.maxGrassTypesPerTexture), describe(ini.texturePctThreshold));
+			} else if (a_options.gameIniDirectory) {
+				throw std::invalid_argument("--game-ini-dir is not a directory: " + a_options.gameIniDirectory->string());
+			} else {
+				spdlog::info("game INI: none found; using engine defaults");
+			}
+		}
+		if (a_options.cliMaxGrassTypes) {
+			settings.maxGrassTypesPerTexture = *a_options.cliMaxGrassTypes;
+		}
+		if (a_options.cliMinGrassSize) {
+			settings.minGrassSize = *a_options.cliMinGrassSize;
+		}
+		if (a_options.cliAlphaThreshold) {
+			settings.alphaThreshold = *a_options.cliAlphaThreshold;
+		}
+		spdlog::info("placement: {}, iMinGrassSize={} iMaxGrassTypesPerTexure={} fTexturePctThreshold={}",
+			settings.mode == Grass::PlacementMode::Smooth ? "smooth" : "vanilla", settings.minGrassSize, settings.maxGrassTypesPerTexture, settings.alphaThreshold);
+		return settings;
+	}
+
 	int Run(const CliOptions& a_options)
 	{
 		if (!a_options.dumpCollisionModel.empty()) {
@@ -764,6 +874,32 @@ namespace
 			return *lhs->cellY == *rhs->cellY ? *lhs->cellX < *rhs->cellX : *lhs->cellY < *rhs->cellY;
 		});
 
+		auto placement = ResolvePlacementSettings(a_options);
+		// Smooth placement reads every cell's weights and its neighbours': built once, then shared
+		// read-only by the workers.
+		std::optional<Grass::SmoothWeightField> smoothField;
+		if (placement.mode == Grass::PlacementMode::Smooth) {
+			const auto fieldBegin = std::chrono::steady_clock::now();
+			smoothField.emplace(snapshot, landsIt->second, placement);
+			placement.smooth.field = std::addressof(*smoothField);
+			spdlog::info("smooth placement: weight grids for {} grass type(s) over {} cell(s) built in {:.3f}s", smoothField->GridCount(),
+				smoothField->CellCount(), SecondsSince(fieldBegin));
+			if (placement.smooth.matchVanillaDensity) {
+				double vanilla = 0.0;
+				double smooth = 0.0;
+				for (const auto& [grass, expected] : smoothField->Expected()) {
+					vanilla += expected.vanilla;
+					smooth += expected.smooth;
+					spdlog::debug("density match {:08X}: vanilla {:.0f} smooth {:.0f} scale {:.3f}", grass.value, expected.vanilla, expected.smooth,
+						smoothField->DensityScale(grass));
+				}
+				spdlog::info("smooth placement: per-type density scaled to vanilla's worldspace totals ({:.0f} expected blades vs {:.0f} unscaled)", vanilla, smooth);
+			}
+		}
+
+		if (!a_options.exportBladesPath.empty()) {
+			return ExportBlades(a_options, placement, snapshot, lands);
+		}
 		if (!a_options.benchmarkRejection) {
 			std::filesystem::create_directories(a_options.outputDirectory);
 		}
@@ -832,9 +968,9 @@ namespace
 				throw std::invalid_argument("--benchmark-rejection needs rejection enabled");
 			}
 #if FASTERNGIO_HAS_GPU
-			return BenchmarkRejection(a_options, snapshot, lands, shapesByGrass, worldIndex, gpu ? std::addressof(*gpu) : nullptr);
+			return BenchmarkRejection(a_options, placement, snapshot, lands, shapesByGrass, worldIndex, gpu ? std::addressof(*gpu) : nullptr);
 #else
-			return BenchmarkRejection(a_options, snapshot, lands, shapesByGrass, worldIndex, nullptr);
+			return BenchmarkRejection(a_options, placement, snapshot, lands, shapesByGrass, worldIndex, nullptr);
 #endif
 		}
 		if (backend == RejectionBackend::Cpu) {
@@ -859,7 +995,7 @@ namespace
 		pipeline.lands = std::move(lands);
 		pipeline.worldEditorID = worldEditorID;
 		pipeline.outputDirectory = a_options.outputDirectory;
-		pipeline.placement = a_options.placement;
+		pipeline.placement = placement;
 		pipeline.overwrite = a_options.overwrite;
 		pipeline.shapesByGrass = &shapesByGrass;
 		pipeline.backend = backend;
