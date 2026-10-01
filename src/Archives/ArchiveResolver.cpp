@@ -4,7 +4,14 @@
 #include <spdlog/spdlog.h>
 #include <zlib.h>
 
+#if defined(_WIN32)
 #include <Windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -100,6 +107,7 @@ namespace FasterNGIO::Archives
 	BsaArchive::BsaArchive(const std::filesystem::path& a_path) :
 		_path(a_path)
 	{
+#if defined(_WIN32)
 		_file = CreateFileW(a_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, nullptr);
 		if (_file == INVALID_HANDLE_VALUE) {
 			_file = nullptr;
@@ -113,6 +121,23 @@ namespace FasterNGIO::Archives
 		_viewSize = static_cast<std::uint64_t>(size.QuadPart);
 		_mapping = CreateFileMappingW(_file, nullptr, PAGE_READONLY, 0, 0, nullptr);
 		_view = _mapping ? static_cast<const std::uint8_t*>(MapViewOfFile(_mapping, FILE_MAP_READ, 0, 0, 0)) : nullptr;
+#else
+		_descriptor = ::open(a_path.c_str(), O_RDONLY | O_CLOEXEC);
+		if (_descriptor < 0) {
+			throw std::runtime_error("failed to open");
+		}
+		struct stat status{};
+		if (::fstat(_descriptor, &status) != 0 || status.st_size < 36) {
+			Close();
+			throw std::runtime_error("file too small");
+		}
+		_viewSize = static_cast<std::uint64_t>(status.st_size);
+		void* view = ::mmap(nullptr, _viewSize, PROT_READ, MAP_PRIVATE, _descriptor, 0);
+		_view = view != MAP_FAILED ? static_cast<const std::uint8_t*>(view) : nullptr;
+		if (_view) {
+			::madvise(view, _viewSize, MADV_RANDOM);
+		}
+#endif
 		if (!_view) {
 			Close();
 			throw std::runtime_error("failed to map");
@@ -201,6 +226,7 @@ namespace FasterNGIO::Archives
 			Close();
 			_path = std::move(a_other._path);
 			_file = std::exchange(a_other._file, nullptr);
+			_descriptor = std::exchange(a_other._descriptor, -1);
 			_mapping = std::exchange(a_other._mapping, nullptr);
 			_view = std::exchange(a_other._view, nullptr);
 			_viewSize = std::exchange(a_other._viewSize, 0);
@@ -218,6 +244,7 @@ namespace FasterNGIO::Archives
 
 	void BsaArchive::Close() noexcept
 	{
+#if defined(_WIN32)
 		if (_view) {
 			UnmapViewOfFile(_view);
 			_view = nullptr;
@@ -230,6 +257,16 @@ namespace FasterNGIO::Archives
 			CloseHandle(_file);
 			_file = nullptr;
 		}
+#else
+		if (_view) {
+			::munmap(const_cast<std::uint8_t*>(_view), _viewSize);
+			_view = nullptr;
+		}
+		if (_descriptor >= 0) {
+			::close(_descriptor);
+			_descriptor = -1;
+		}
+#endif
 	}
 
 	std::vector<std::uint8_t> BsaArchive::Read(const Entry& a_entry) const
@@ -281,18 +318,18 @@ namespace FasterNGIO::Archives
 	}
 
 	ArchiveResolver::ArchiveResolver(std::filesystem::path a_dataPath, std::span<const std::string> a_archiveOrder) :
-		_dataPath(std::move(a_dataPath))
+		_data(std::move(a_dataPath))
 	{
 		std::unordered_set<std::string> seen;
 		for (const auto& name : a_archiveOrder) {
 			if (!seen.insert(LowerAscii(name)).second) {
 				continue;
 			}
-			const auto path = _dataPath / name;
-			std::error_code ec;
-			if (!std::filesystem::is_regular_file(path, ec)) {
+			const auto found = _data.Find(name);
+			if (!found) {
 				continue;
 			}
+			const auto& path = *found;
 			try {
 				auto archive = std::make_unique<BsaArchive>(path);
 				const auto archiveIndex = static_cast<std::uint32_t>(_archives.size());
@@ -314,11 +351,11 @@ namespace FasterNGIO::Archives
 			return std::nullopt;
 		}
 
-		const auto loosePath = _dataPath / std::filesystem::path(canonical);
-		std::error_code ec;
-		if (std::filesystem::is_regular_file(loosePath, ec)) {
-			std::ifstream input(loosePath, std::ios::binary);
-			std::vector<std::uint8_t> bytes(static_cast<std::size_t>(std::filesystem::file_size(loosePath, ec)));
+		// Loose files win, matched as the game matches them (case-insensitively, either separator).
+		if (const auto loosePath = _data.Find(canonical)) {
+			std::error_code ec;
+			std::ifstream input(*loosePath, std::ios::binary);
+			std::vector<std::uint8_t> bytes(static_cast<std::size_t>(std::filesystem::file_size(*loosePath, ec)));
 			if (!ec && input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
 				return bytes;
 			}

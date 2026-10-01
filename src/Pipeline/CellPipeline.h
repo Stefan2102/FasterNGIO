@@ -16,12 +16,19 @@ namespace FasterNGIO::Gpu
 	class GpuRejector;
 }
 
+namespace FasterNGIO::Rejection
+{
+	class CpuBvh;
+}
+
 namespace FasterNGIO::Pipeline
 {
 	enum class RejectionBackend
 	{
 		None,
+		// The CPU BVH (Rejection::CpuBvh), inline on the worker that placed the cell.
 		Cpu,
+		// DXR / Vulkan ray tracing on the render thread.
 		Gpu
 	};
 
@@ -36,7 +43,9 @@ namespace FasterNGIO::Pipeline
 		const std::unordered_map<GameData::FormID, Rejection::QueryShape, GameData::FormIDHash>* shapesByGrass{ nullptr };
 		RejectionBackend backend{ RejectionBackend::None };
 		const Rejection::WorldIndex* world{ nullptr };
+		const Rejection::CpuBvh* cpuBvh{ nullptr };
 		Gpu::GpuRejector* gpu{ nullptr };
+		// Re-test every cell with the brute-force CPU reference and count disagreements.
 		bool validateCpu{ false };
 		// Cells whose candidates may wait for the GPU at once. Producers past the limit suspend
 		// in the graph until a cell is written; nothing blocks.

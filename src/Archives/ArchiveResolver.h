@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameData/GameData.h"
+#include "Platform/DataDirectory.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -47,6 +48,7 @@ namespace FasterNGIO::Archives
 		std::filesystem::path _path;
 		void* _file{ nullptr };
 		void* _mapping{ nullptr };
+		int _descriptor{ -1 };
 		const std::uint8_t* _view{ nullptr };
 		std::uint64_t _viewSize{ 0 };
 		std::uint32_t _version{ 0 };
@@ -72,7 +74,7 @@ namespace FasterNGIO::Archives
 			BsaArchive::Entry entry;
 		};
 
-		std::filesystem::path _dataPath;
+		Platform::DataDirectory _data;
 		std::vector<std::unique_ptr<BsaArchive>> _archives;
 		std::unordered_map<std::string, Location> _index;
 	};

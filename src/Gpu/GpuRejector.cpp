@@ -12,7 +12,6 @@
 #include <rhi_feature_info.h>
 #include <rhi_helpers.h>
 
-#include <directx/d3d12.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -49,11 +48,11 @@ namespace FasterNGIO::Gpu
 
 		constexpr std::uint64_t kAccelerationStructureAlignment = 256;  // D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT
 		constexpr std::uint64_t kBlasScratchBudget = 512ull << 20;
-		// D3D12 caps a shader-visible CBV/SRV/UAV heap at 1,000,000 descriptors.
-		constexpr std::uint32_t kDescriptorCapacity = 500000;
+		// One raw SRV per collision model plus a few per frame set. D3D12 caps a shader-visible heap at
+		// 1,000,000 descriptors; a Vulkan descriptor heap is a buffer, so stay well inside both.
+		constexpr std::uint32_t kDescriptorCapacity = 1u << 17;
 		constexpr std::uint32_t kRootConstantCount = 7;
 		constexpr std::uint64_t kDebugBytes = 16 + 255 * 96;
-		constexpr std::uint32_t kFrameSets = 4;
 
 		[[nodiscard]] std::uint64_t AlignUp(std::uint64_t a_value, std::uint64_t a_alignment)
 		{
@@ -63,7 +62,7 @@ namespace FasterNGIO::Gpu
 		void Check(rhi::Result a_result, const char* a_what)
 		{
 			if (!rhi::IsOk(a_result)) {
-				throw std::runtime_error(std::string("GPU: ") + a_what + " failed");
+				throw std::runtime_error(std::string("GPU: ") + a_what + " failed (rhi::Result " + std::to_string(static_cast<std::uint32_t>(a_result)) + ")");
 			}
 		}
 
@@ -243,26 +242,6 @@ namespace FasterNGIO::Gpu
 
 		// ---- GPU resources ------------------------------------------------------------------
 
-		struct Batch
-		{
-			std::uint32_t tlas;
-			std::uint32_t candidateOffset;
-			std::uint32_t candidateCount;
-			std::uint32_t outputOffset;
-			float segmentLength;
-			std::uint32_t padding[3];
-		};
-		static_assert(sizeof(Batch) == 32);
-
-		// ExecuteIndirect record: two root constants (batch index, padding) then the dispatch.
-		struct IndirectRecord
-		{
-			std::uint32_t batchIndex;
-			std::uint32_t padding;
-			D3D12_DISPATCH_RAYS_DESC dispatch;
-		};
-		static_assert(sizeof(IndirectRecord) == 112);
-
 		struct MappedBuffer
 		{
 			rhi::ResourcePtr resource;
@@ -288,13 +267,10 @@ namespace FasterNGIO::Gpu
 		struct FrameSet
 		{
 			MappedBuffer candidates;
-			MappedBuffer batches;
-			MappedBuffer arguments;
 			rhi::ResourcePtr output;
 			std::uint64_t outputCapacity{ 0 };
 			MappedBuffer readback;
 			std::uint32_t candidatesSrv{ 0 };
-			std::uint32_t batchesSrv{ 0 };
 			std::uint32_t outputUav{ 0 };
 			// Diagnostics (FASTERNGIO_DEBUG_CANDIDATE): per-invocation records for one candidate.
 			rhi::ResourcePtr debug;
@@ -309,7 +285,6 @@ namespace FasterNGIO::Gpu
 			};
 			std::vector<Pending> pending;
 			std::uint64_t queryCount{ 0 };
-			std::uint32_t batchCount{ 0 };
 			bool busy{ false };
 		};
 
@@ -328,7 +303,11 @@ namespace FasterNGIO::Gpu
 			rhi::DescriptorHeapHandle samplerHeap{};
 			rhi::PipelineLayoutHandle layout{};
 			rhi::PipelineHandle pipeline{};
-			rhi::CommandSignatureHandle signature{};
+			rhi::RayTracingShaderTableRegion rayGen{};
+			rhi::RayTracingShaderTableRegion miss{};
+			rhi::RayTracingShaderTableRegion hit{};
+			std::uint32_t tlasSrv{ 0 };
+			float segmentLength{ 0.0f };
 			std::uint32_t debugCandidate{ 0xFFFFFFFFu };
 			std::shared_ptr<FrameWork> current;
 		};
@@ -356,7 +335,7 @@ namespace FasterNGIO::Gpu
 		{
 		};
 
-		// Records BLAS builds, the TLAS build and the indirect DispatchRays for one frame. All
+		// Records BLAS builds, the TLAS build and the frame's one DispatchRays. All
 		// synchronisation inside the frame is explicit; the graph only orders whole frames.
 		class RejectionPass final : public org::TypedRenderGraphPass<RejectionPass, RejectionFrame, RejectionBindings>
 		{
@@ -408,7 +387,7 @@ namespace FasterNGIO::Gpu
 					GlobalBarrier(commands, Sync::BuildRaytracingAccelerationStructure, Access::RaytracingAccelerationStructureWrite,
 						Sync::Raytracing, Access::RaytracingAccelerationStructureRead);
 				}
-				if (work.frame && work.frame->batchCount > 0) {
+				if (work.frame && work.frame->queryCount > 0) {
 					const auto& frame = *work.frame;
 					commands.BindLayout(context.layout);
 					commands.BindPipeline(context.pipeline);
@@ -417,10 +396,16 @@ namespace FasterNGIO::Gpu
 						commands.CopyBufferRegion(frame.debug->GetHandle(), 0, frame.debugZero.resource->GetHandle(), 0, kDebugBytes);
 						GlobalBarrier(commands, Sync::Copy, Access::CopyDest, Sync::Raytracing, Access::UnorderedAccess);
 					}
-					const std::uint32_t constants[kRootConstantCount]{ 0, 0, frame.batchesSrv, frame.candidatesSrv, frame.outputUav,
+					const std::uint32_t constants[kRootConstantCount]{ context.tlasSrv, frame.candidatesSrv, frame.outputUav,
+						static_cast<std::uint32_t>(frame.queryCount), std::bit_cast<std::uint32_t>(context.segmentLength),
 						debug ? context.debugCandidate : 0xFFFFFFFFu, frame.debugUav };
 					commands.PushConstants(rhi::ShaderStage::All, 0, 0, 0, kRootConstantCount, constants);
-					commands.ExecuteIndirect(context.signature, frame.arguments.resource->GetHandle(), 0, {}, 0, frame.batchCount);
+					rhi::RayTracingDispatchDesc dispatch{};
+					dispatch.rayGenerationShaderTable = context.rayGen;
+					dispatch.missShaderTable = context.miss;
+					dispatch.hitGroupTable = context.hit;
+					dispatch.width = static_cast<std::uint32_t>(frame.queryCount);
+					commands.TraceRays(dispatch);
 					GlobalBarrier(commands, Sync::Raytracing, Access::UnorderedAccess, Sync::Copy, Access::CopySource);
 					commands.CopyBufferRegion(frame.readback.resource->GetHandle(), 0, frame.output->GetHandle(), 0,
 						frame.queryCount * sizeof(std::uint32_t));
@@ -511,6 +496,7 @@ namespace FasterNGIO::Gpu
 		[[nodiscard]] GpuRejectorStats Stats() const
 		{
 			GpuRejectorStats stats;
+			stats.adapter = _adapterName;
 			stats.models = _statModels.load(std::memory_order_relaxed);
 			stats.instances = _statInstances.load(std::memory_order_relaxed);
 			stats.blasBytes = _statBlasBytes.load(std::memory_order_relaxed);
@@ -534,22 +520,7 @@ namespace FasterNGIO::Gpu
 
 		void Initialize()
 		{
-			rhi::DeviceCreateInfo create{};
-			create.backend = rhi::Backend::D3D12;
-			create.framesInFlight = 3;
-			create.enableDebug = _desc.debugLayer;
-			Check(rhi::CreateD3D12Device(create, _device), "device creation");
-
-			RayTracingFeatureInfo rayTracing{};
-			ResourceAllocationFeatureInfo allocation{};
-			rayTracing.header.pNext = &allocation.header;
-			Check(_device->QueryFeatureInfo(&rayTracing.header), "feature query");
-			if (!rayTracing.pipeline || !rayTracing.accelerationStructure) {
-				throw std::runtime_error("GPU: this adapter does not support DXR ray-tracing pipelines");
-			}
-			_rayTracing = rayTracing;
-			_gpuUploadHeap = allocation.gpuUploadHeapSupported && !std::getenv("FASTERNGIO_NO_GPU_UPLOAD_HEAP");
-			spdlog::info("GPU: DXR tier {}, GPU upload heap {}", static_cast<int>(rayTracing.backendTier), _gpuUploadHeap ? "yes" : "no");
+			CreateDeviceAndCheckFeatures();
 
 			rhi::DescriptorHeapDesc heapDesc{ rhi::DescriptorHeapType::CbvSrvUav, kDescriptorCapacity, true, "FasterNGIO descriptors" };
 			Check(_device->CreateDescriptorHeap(heapDesc, _heap), "descriptor heap");
@@ -561,9 +532,10 @@ namespace FasterNGIO::Gpu
 
 			_host = std::make_unique<org::PersistentGraphHost>(org::PersistentGraphHost::Desc{
 				.device = _device.Get(),
-				.backend = rhi::Backend::D3D12,
+				.backend = _backend,
 				.tasks = std::make_shared<org::runtime::ThreadPoolTaskService>(2),
 				.framesInFlight = 3,
+				.epochOrder = {},
 			});
 			_heartbeat = org::Buffer::CreateSharedUnmaterialized(rhi::HeapType::DeviceLocal, 256, true);
 			org::BufferBase::DescriptorRequirements requirements{};
@@ -578,7 +550,10 @@ namespace FasterNGIO::Gpu
 			_passContext->samplerHeap = _samplerHeap->GetHandle();
 			_passContext->layout = _layout->GetHandle();
 			_passContext->pipeline = _pipeline->GetHandle();
-			_passContext->signature = _signature->GetHandle();
+			_passContext->rayGen = { _shaderTable.resource->GetHandle(), _rayGenOffset, _recordStride, _recordStride };
+			_passContext->miss = { _shaderTable.resource->GetHandle(), _missOffset, _recordStride, _recordStride };
+			_passContext->hit = { _shaderTable.resource->GetHandle(), _hitOffset, _recordStride * _hitCount, _recordStride };
+			_passContext->segmentLength = _desc.segmentLength;
 			if (const char* debugCandidate = std::getenv("FASTERNGIO_DEBUG_CANDIDATE")) {
 				_passContext->debugCandidate = static_cast<std::uint32_t>(std::strtoul(debugCandidate, nullptr, 10));
 			}
@@ -610,13 +585,81 @@ namespace FasterNGIO::Gpu
 			_tlasInstances = {};
 			_blasScratch.Reset();
 			_shaderTable = {};
-			_signature.Reset();
 			_pipeline.Reset();
 			_layout.Reset();
 			_heap.Reset();
 			_samplerHeap.Reset();
 			_host.reset();
 			_device.Reset();
+		}
+
+		// Everything the ray-tracing path needs, checked up front so an unsuitable adapter falls back
+		// to the CPU before any work is posted rather than failing mid-run.
+		void CreateDeviceAndCheckFeatures()
+		{
+			_backend = _desc.api == GpuApi::D3D12 ? rhi::Backend::D3D12 : rhi::Backend::Vulkan;
+			rhi::DeviceCreateInfo create{};
+			create.backend = _backend;
+			create.framesInFlight = 3;
+			create.enableDebug = _desc.debugLayer;
+			rhi::Result created = rhi::Result::Unsupported;
+#if defined(_WIN32)
+			if (_desc.api == GpuApi::D3D12) {
+				created = rhi::CreateD3D12Device(create, _device);
+			}
+#endif
+			if (_desc.api == GpuApi::Vulkan) {
+				created = rhi::CreateVulkanDevice(create, _device);
+			}
+			if (!rhi::IsOk(created) || !_device) {
+				throw GpuUnsupportedError(std::string("no ") + GpuApiName(_desc.api) + " device could be created");
+			}
+
+			AdapterFeatureInfo adapter{};
+			ShaderFeatureInfo shader{};
+			RayTracingFeatureInfo rayTracing{};
+			ResourceAllocationFeatureInfo allocation{};
+			adapter.header.pNext = &shader.header;
+			shader.header.pNext = &rayTracing.header;
+			rayTracing.header.pNext = &allocation.header;
+			Check(_device->QueryFeatureInfo(&adapter.header), "feature query");
+			_adapterName = adapter.name;
+
+			const bool vulkan = _desc.api == GpuApi::Vulkan;
+			std::vector<std::string> missing;
+			if (shader.maxShaderModel < ShaderModel::SM_6_6) {
+				missing.emplace_back("shader model 6.6");
+			}
+			if (!shader.unifiedResourceHeaps || !shader.unboundedDescriptorTables) {
+				missing.emplace_back(vulkan ? "bindless descriptor heaps (VK_EXT_descriptor_heap)" : "bindless descriptor heaps (resource binding tier 3)");
+			}
+			if (!rayTracing.pipeline) {
+				missing.emplace_back(vulkan ? "ray-tracing pipelines (VK_KHR_ray_tracing_pipeline)" : "ray-tracing pipelines (DXR 1.0)");
+			}
+			if (!rayTracing.accelerationStructure) {
+				missing.emplace_back(vulkan ? "acceleration structures (VK_KHR_acceleration_structure)" : "acceleration structures");
+			}
+			if (rayTracing.pipeline && rayTracing.maxRayRecursionDepth < 1) {
+				missing.emplace_back("ray recursion depth 1");
+			}
+			if (rayTracing.pipeline && rayTracing.maxRayDispatchWidth < 65536) {
+				missing.emplace_back("ray dispatches of 65536 launches");
+			}
+			if (!missing.empty()) {
+				std::string list;
+				for (const auto& item : missing) {
+					list += (list.empty() ? "" : ", ") + item;
+				}
+				_device.Reset();
+				throw GpuUnsupportedError(_adapterName + " (" + GpuApiName(_desc.api) + ") lacks " + list);
+			}
+			_rayTracing = rayTracing;
+			_maxQueriesPerFrame = (std::min)(_desc.maxQueriesPerFrame, rayTracing.maxRayDispatchWidth);
+			_gpuUploadHeap = allocation.gpuUploadHeapSupported && !std::getenv("FASTERNGIO_NO_GPU_UPLOAD_HEAP");
+			constexpr const char* kTierNames[] = { "none", "DXR 1.0", "DXR 1.1", "VK_KHR_ray_tracing_pipeline", "DXR 2.0" };
+			const auto tier = static_cast<std::size_t>(rayTracing.backendTier);
+			spdlog::info("GPU: {} ({}), {}, GPU upload heap {}", _adapterName, GpuApiName(_desc.api), tier < std::size(kTierNames) ? kTierNames[tier] : "unknown tier",
+				_gpuUploadHeap ? "yes" : "no");
 		}
 
 		void CreatePipeline()
@@ -629,12 +672,13 @@ namespace FasterNGIO::Gpu
 			const std::vector<char> source{ std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
 			org::services::ShaderCompiler compiler(_desc.shaderCacheDirectory);
 			if (!compiler.Available()) {
-				throw std::runtime_error("GPU: DXC (dxcompiler.dll) is not available");
+				throw GpuUnsupportedError("the DXC shader compiler (dxcompiler) is not available");
 			}
 			org::services::ShaderCompileRequest request{};
 			request.sourceName = shaderPath.string();
 			request.source = std::as_bytes(std::span(source));
 			request.target = L"lib_6_6";
+			request.format = _desc.api == GpuApi::Vulkan ? org::services::ShaderBinaryFormat::Spirv : org::services::ShaderBinaryFormat::Dxil;
 			request.includeDirectories = { _desc.shaderDirectory };
 			request.dependencyFiles = { _desc.shaderDirectory / "Shared" / "GrassQueryMath.hlsli" };
 			request.defines = {
@@ -711,15 +755,6 @@ namespace FasterNGIO::Gpu
 			for (std::uint32_t i = 0; i < _hitCount; ++i) {
 				writeRecord(_hitOffset + i * _recordStride, hitRecords[i]);
 			}
-			_shaderTableAddress = _device->GetBufferDeviceAddress({ _shaderTable.resource->GetHandle(), 0 });
-
-			rhi::IndirectArg arguments[2]{};
-			arguments[0].kind = rhi::IndirectArgKind::Constant;
-			arguments[0].u.rootConstants = { 0, 0, 2 };
-			arguments[1].kind = rhi::IndirectArgKind::DispatchRays;
-			Check(_device->CreateCommandSignature(
-					  rhi::CommandSignatureDesc{ .args = { arguments, 2 }, .byteStride = sizeof(IndirectRecord) }, _layout->GetHandle(), _signature),
-				"command signature");
 		}
 
 		[[nodiscard]] MappedBuffer CreateMapped(std::uint64_t a_bytes, rhi::HeapType a_heap, const char* a_name)
@@ -930,6 +965,7 @@ namespace FasterNGIO::Gpu
 			_device->WaitIdle();
 
 			_tlasSrv = AllocateDescriptor();
+			_passContext->tlasSrv = _tlasSrv;
 			rhi::SrvDesc srv{};
 			srv.dimension = rhi::SrvDim::AccelerationStruct;
 			srv.accel.accelerationStructure = _tlas->GetHandle();
@@ -969,7 +1005,6 @@ namespace FasterNGIO::Gpu
 			}
 			auto frame = std::make_unique<FrameSet>();
 			frame->candidatesSrv = AllocateDescriptor();
-			frame->batchesSrv = AllocateDescriptor();
 			frame->outputUav = AllocateDescriptor();
 			if (_passContext->debugCandidate != 0xFFFFFFFFu) {
 				Check(_device->CreateCommittedResource(
@@ -990,26 +1025,17 @@ namespace FasterNGIO::Gpu
 			return *_frames.back();
 		}
 
-		// Sizes a frame set for its queries and writes candidates, batches and indirect records.
+		// Sizes a frame set for its queries and concatenates the jobs' candidates.
 		void FillFrameSet(FrameSet& a_frame, std::vector<std::shared_ptr<TraceJob>>& a_jobs)
 		{
 			std::uint64_t queries = 0;
 			for (const auto& job : a_jobs) {
 				queries += job->Queries().size();
 			}
-			const auto batchCount = static_cast<std::uint32_t>(a_jobs.size());
 
 			if (a_frame.candidates.bytes < queries * sizeof(Query)) {
 				a_frame.candidates = CreateMapped(queries * sizeof(Query) * 3 / 2, rhi::HeapType::Upload, "FasterNGIO candidates");
 				WriteStructuredSrv(a_frame.candidatesSrv, a_frame.candidates.resource, static_cast<std::uint32_t>(a_frame.candidates.bytes / sizeof(Query)), sizeof(Query));
-			}
-			if (a_frame.batches.bytes < batchCount * sizeof(Batch)) {
-				a_frame.batches = CreateMapped(static_cast<std::uint64_t>(batchCount) * sizeof(Batch) * 3 / 2, rhi::HeapType::Upload, "FasterNGIO batches");
-				WriteStructuredSrv(a_frame.batchesSrv, a_frame.batches.resource, static_cast<std::uint32_t>(a_frame.batches.bytes / sizeof(Batch)), sizeof(Batch));
-			}
-			if (a_frame.arguments.bytes < batchCount * sizeof(IndirectRecord)) {
-				a_frame.arguments = CreateMapped(static_cast<std::uint64_t>(batchCount) * sizeof(IndirectRecord) * 3 / 2, rhi::HeapType::Upload,
-					"FasterNGIO indirect arguments");
 			}
 			if (a_frame.outputCapacity < queries) {
 				a_frame.outputCapacity = queries * 3 / 2;
@@ -1029,38 +1055,16 @@ namespace FasterNGIO::Gpu
 			}
 
 			auto* candidates = reinterpret_cast<Query*>(a_frame.candidates.mapped);
-			auto* batches = reinterpret_cast<Batch*>(a_frame.batches.mapped);
-			auto* records = reinterpret_cast<IndirectRecord*>(a_frame.arguments.mapped);
-			const auto rayGen = _shaderTableAddress + _rayGenOffset;
-			const auto miss = _shaderTableAddress + _missOffset;
-			const auto hit = _shaderTableAddress + _hitOffset;
 			std::uint64_t offset = 0;
 			a_frame.pending.clear();
-			for (std::uint32_t b = 0; b < batchCount; ++b) {
-				auto& job = a_jobs[b];
+			for (auto& job : a_jobs) {
 				const auto count = job->Queries().size();
 				std::memcpy(candidates + offset, job->Queries().data(), count * sizeof(Query));
-				batches[b] = Batch{ .tlas = _tlasSrv,
-					.candidateOffset = static_cast<std::uint32_t>(offset),
-					.candidateCount = static_cast<std::uint32_t>(count),
-					.outputOffset = static_cast<std::uint32_t>(offset),
-					.segmentLength = _desc.segmentLength,
-					.padding = {} };
-				auto& record = records[b];
-				record = {};
-				record.batchIndex = b;
-				record.dispatch.RayGenerationShaderRecord = { rayGen, _recordStride };
-				record.dispatch.MissShaderTable = { miss, _recordStride, _recordStride };
-				record.dispatch.HitGroupTable = { hit, _recordStride * _hitCount, _recordStride };
-				record.dispatch.Width = static_cast<UINT>(count);
-				record.dispatch.Height = 1;
-				record.dispatch.Depth = 1;
 				job->ReleaseQueries();
 				a_frame.pending.push_back({ std::move(job), offset, count });
 				offset += count;
 			}
 			a_frame.queryCount = queries;
-			a_frame.batchCount = batchCount;
 		}
 
 		void ExecuteFrame(std::shared_ptr<FrameWork> a_work, FrameSet* a_frame)
@@ -1135,7 +1139,7 @@ namespace FasterNGIO::Gpu
 					if (_worldReady && !waiting.empty()) {
 						std::vector<std::shared_ptr<TraceJob>> jobs;
 						std::uint64_t queries = 0;
-						while (!waiting.empty() && (jobs.empty() || queries + waiting.front()->Queries().size() <= _desc.maxQueriesPerFrame)) {
+						while (!waiting.empty() && (jobs.empty() || queries + waiting.front()->Queries().size() <= _maxQueriesPerFrame)) {
 							queries += waiting.front()->Queries().size();
 							jobs.push_back(std::move(waiting.front()));
 							waiting.pop_front();
@@ -1198,8 +1202,12 @@ namespace FasterNGIO::Gpu
 		std::atomic<double> _statWorldSeconds{ 0.0 };
 
 		// Render thread only.
+		rhi::Backend _backend{ rhi::Backend::D3D12 };
 		rhi::DevicePtr _device;
+		// Written once by the render thread before the constructor returns.
+		std::string _adapterName;
 		RayTracingFeatureInfo _rayTracing{};
+		std::uint32_t _maxQueriesPerFrame{ 0 };
 		bool _gpuUploadHeap{ false };
 		rhi::DescriptorHeapPtr _heap;
 		rhi::DescriptorHeapPtr _samplerHeap;
@@ -1208,9 +1216,7 @@ namespace FasterNGIO::Gpu
 		std::vector<std::byte> _shaderBinary;
 		rhi::PipelineLayoutPtr _layout;
 		rhi::PipelinePtr _pipeline;
-		rhi::CommandSignaturePtr _signature;
 		MappedBuffer _shaderTable;
-		std::uint64_t _shaderTableAddress{ 0 };
 		std::uint64_t _recordStride{ 0 };
 		std::uint64_t _rayGenOffset{ 0 };
 		std::uint64_t _missOffset{ 0 };

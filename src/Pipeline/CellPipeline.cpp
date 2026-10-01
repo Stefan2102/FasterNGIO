@@ -2,6 +2,7 @@
 
 #include "Grass/NgioCacheWriter.h"
 #include "Pipeline/TbbGraphScheduler.h"
+#include "Rejection/CpuBvh.h"
 #include "Rejection/CpuReference.h"
 #if FASTERNGIO_HAS_GPU
 #include "Gpu/GpuRejector.h"
@@ -12,6 +13,7 @@
 #include <oneapi/tbb/concurrent_queue.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <exception>
@@ -236,7 +238,10 @@ namespace FasterNGIO::Pipeline
 						work->shapes.push_back(_desc.shapesByGrass->at(group.grass->formID));
 					}
 					if (_desc.backend == RejectionBackend::Cpu) {
-						work->rejected = Rejection::RejectCellOnCpu(*_desc.world, work->candidates, work->shapes);
+						work->rejected = _desc.cpuBvh->RejectCell(work->candidates, work->shapes);
+						if (_desc.validateCpu) {
+							Validate(*work);
+						}
 					}
 #if FASTERNGIO_HAS_GPU
 					if (_desc.backend == RejectionBackend::Gpu) {
@@ -345,7 +350,6 @@ namespace FasterNGIO::Pipeline
 				return done;
 			}
 
-#if FASTERNGIO_HAS_GPU
 			void Validate(const CellWork& a_work)
 			{
 				const auto reference = Rejection::RejectCellOnCpu(*_desc.world, a_work.candidates, a_work.shapes);
@@ -361,8 +365,11 @@ namespace FasterNGIO::Pipeline
 						const auto& shape = a_work.shapes[blade.groupIndex];
 						const Float3 p{ blade.position[0], blade.position[1], blade.position[2] - shape.depth };
 						const Float3 q{ blade.position[0], blade.position[1], blade.position[2] + shape.height };
-						const auto query = std::ranges::find(a_work.queryBlades, static_cast<std::uint32_t>(w * 32 + bit)) - a_work.queryBlades.begin();
-						spdlog::warn("mismatch cell ({}, {}) query {} blade at ({:.1f}, {:.1f}, {:.1f}) r={:.2f}: cpu={} gpu={} {}",
+						std::ptrdiff_t query = -1;
+#if FASTERNGIO_HAS_GPU
+						query = std::ranges::find(a_work.queryBlades, static_cast<std::uint32_t>(w * 32 + bit)) - a_work.queryBlades.begin();
+#endif
+						spdlog::warn("mismatch cell ({}, {}) query {} blade at ({:.1f}, {:.1f}, {:.1f}) r={:.2f}: reference={} {}={} {}",
 							a_work.candidates.cellX,
 							a_work.candidates.cellY,
 							query,
@@ -371,12 +378,12 @@ namespace FasterNGIO::Pipeline
 							blade.position[2],
 							shape.radius,
 							(reference[w] >> bit) & 1u,
+							_desc.backend == RejectionBackend::Gpu ? "gpu" : "bvh",
 							(a_work.rejected[w] >> bit) & 1u,
 							Rejection::ExplainCapsule(*_desc.world, a_work.candidates.cellX, a_work.candidates.cellY, p, q, shape.radius));
 					}
 				}
 			}
-#endif
 
 			const CellPipelineDesc& _desc;
 			Graph _graph;

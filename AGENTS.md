@@ -1,8 +1,9 @@
 # AGENTS.md
 
 FasterNGIO generates Skyrim SE grass caches in NGIO's `.cgid` format, with NGIO-style "no grass in
-objects" rejection traced on the GPU. It is a standalone, GPL-3 command-line tool: it must not depend on
-SARP, BasicRenderer or CommonLibSSE.
+objects" rejection ray traced on the GPU (D3D12 or Vulkan) or, as a fallback, against a CPU BVH. It is
+a standalone, GPL-3 command-line tool for Windows and Linux: it must not depend on SARP, BasicRenderer
+or CommonLibSSE.
 
 ## Layout
 
@@ -11,47 +12,67 @@ SARP, BasicRenderer or CommonLibSSE.
 | `src/GameData/` | Plugin (ESM/ESP/ESL) parsing, load order, static world snapshot. Copied from SARP; adds OBND and FLOR/SCOL/TACT. |
 | `src/Grass/` | Vanilla grass placement (engine RNG emulation) split into `GenerateCellCandidates` and `FinalizeCell`; the `.cgid` writer. |
 | `src/Archives/` | Memory-mapped BSA (v103/104/105) reader and load-order-aware resolver (loose files win). |
+| `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows). |
 | `src/Collision/` | nifly-based Havok collision extraction (CMS, packed strips, convex hulls, boxes, spheres, capsules) into model space. |
-| `src/Rejection/` | NGIO query shapes, the per-world instance index, and the CPU reference rejection. |
-| `src/Gpu/` | `GpuRejector`: the render thread (OpenRenderGraph `PersistentGraphHost`), BLAS/TLAS, DXR pipeline, indirect DispatchRays, readback. |
+| `src/Rejection/` | NGIO query shapes, the per-world instance index, the CPU BVH fallback (`CpuBvh`) and the brute-force reference. |
+| `src/Gpu/` | `GpuRejector`: feature check, the render thread (OpenRenderGraph `PersistentGraphHost`), BLAS/TLAS, ray-tracing pipeline, one DispatchRays per frame, readback. |
 | `src/Pipeline/` | Lock-free cell pipeline on ORGModuleServices' AsyncStateGraph; TBB graph scheduler; MPSC queue. |
-| `shaders/` | `GrassRejection.hlsl` and `Shared/GrassQueryMath.hlsli`, which the CPU reference also compiles (`src/Rejection/HlslShim.h`). |
+| `shaders/` | `GrassRejection.hlsl` (DXIL for D3D12, SPIR-V for Vulkan) and `Shared/GrassQueryMath.hlsli`, which the CPU paths also compile (`src/Rejection/HlslShim.h`). |
 | `external/` | Submodules: BasicRHI, OpenRenderGraph, ORGModuleServices, BasicTelemetry, volk (pinned to BasicRenderer's commits) and upstream nifly. |
 
 ## Build and test
 
 ```powershell
-cmake --preset vs2026          # GPU build (D3D12 + DXR); vs2026-cpu builds without the GPU stack
+cmake --preset vs2026          # GPU build (D3D12 + Vulkan); vs2026-cpu builds without the GPU stack
 cmake --build --preset vs2026
 ctest --preset vs2026
 ```
 
+```sh
+cmake --preset linux -DVulkan_INCLUDE_DIR=<Vulkan-Headers>/include   # or linux-cpu
+cmake --build --preset linux && ctest --preset linux
+```
+
 vcpkg (`VCPKG_ROOT`) provides zlib, lz4, TBB, spdlog, fmt, gtest, Tracy and, for the GPU build,
-directx-headers, directx-dxc, flecs, boost-container-hash, nlohmann-json and sqlite3. The Vulkan SDK
-headers are needed even for the D3D12-only tool: OpenRenderGraph uses BasicRHI's Vulkan interop
-unconditionally. Shaders and the DXC DLLs are deployed next to the exe by the `FasterNGIOShaders`
-target and compiled (with a disk cache) at startup.
+directx-headers, directx-dxc, flecs, boost-container-hash, nlohmann-json, sqlite3 and (off Windows)
+directxmath. Vulkan headers must include `VK_EXT_descriptor_heap` (Vulkan SDK 1.4.357 or the matching
+Vulkan-Headers tag); distribution headers are usually too old. Off Windows, DirectX-Headers'
+`wsl/winadapter.h` supplies the Win32 scalar types the shared libraries use. Shaders and the DXC
+runtime (`dxcompiler.dll`/`dxil.dll`, `libdxcompiler.so`) are deployed next to the exe by the
+`FasterNGIOShaders` target and compiled (with a disk cache) at startup. `vs2026-clangcl` builds with
+`-Werror`.
 
 ## Load-bearing rules
 
 - **Parity.** With `--reject none`, output must stay byte-identical to SARP's
-  `SARPGrassCacheGenerator --paint vanilla`. Placement changes must preserve the engine's RNG draw order.
+  `SARPGrassCacheGenerator --paint vanilla`, and Linux output byte-identical to Windows output.
+  Placement changes must preserve the engine's RNG draw order.
 - **Rejection is a post-filter.** NGIO's own hook skips the colour/orientation/height RNG draws for a
   rejected blade; FasterNGIO deliberately keeps the vanilla layout and only drops blades.
 - **One source of geometric truth.** Exact overlap tests live in `shaders/Shared/GrassQueryMath.hlsli`
-  and are compiled by both the GPU and the CPU reference. Change them there, never in one copy.
+  and are compiled by the GPU, the CPU BVH and the brute-force reference (`PrimitiveTests.h` wraps
+  them per primitive). Change them there, never in one copy.
+- **Fallback is decided up front.** `GpuRejector` checks every feature it needs before any work is
+  posted and throws `GpuUnsupportedError` listing what is missing; `--reject auto` then uses the CPU
+  BVH. Add any new GPU requirement to that check.
 - **No locks on the hot paths.** Workers and the render thread communicate through the AsyncStateGraph
-  (producers, GPU submission tokens, capacity suspensions) and `Pipeline::MpscQueue`. Do not add
-  mutexes or condition variables to the cell pipeline or `GpuRejector`.
+  (producers, GPU submission tokens, capacity suspensions) and `Pipeline::MpscQueue`. The CPU BVH and
+  `DataDirectory` are immutable after construction. Do not add mutexes or condition variables to the
+  cell pipeline, `GpuRejector` or the rejection structures.
 - **DXR payload.** The hit result is written by the closest-hit and miss shaders. Do not reintroduce
   `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and rely on the payload surviving a traversal that runs neither:
   on NVIDIA it does not.
 
 ## Validation
 
-- `--validate-cpu` runs the CPU reference for every GPU-traced cell and reports disagreements (expect a
-  handful of float-precision edge cases per million blades, nothing else).
+- `--validate-cpu` re-runs every cell through the brute-force CPU reference and reports
+  disagreements: none for the CPU BVH, a handful of float-precision edge cases per million blades
+  for the GPU.
+- `--benchmark-rejection` places every selected cell in memory and times the CPU BVH (all threads and
+  one) and the GPU on the same queries, without file I/O.
 - `FASTERNGIO_DEBUG_CANDIDATE=<frame-global candidate index>` compiles shader debug capture in and logs
   every raygen/intersection invocation for that candidate. Use with `--cell` so the index is the cell's
   query index.
-- `--collision-survey` and `--dump-collision <model> <obj>` inspect collision extraction.
+- `--collision-survey` and `--dump-collision <model> <obj>` inspect collision extraction;
+  `FASTERNGIO_SURVEY_DUMP=<file>` makes the survey write per-model primitive counts for diffing builds
+  or platforms.

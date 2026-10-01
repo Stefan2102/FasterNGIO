@@ -15,9 +15,14 @@ add_library(FasterNGIOCore STATIC
 	Grass/NgioCacheWriter.h
 	Grass/Placement.cpp
 	Grass/Placement.h
+	Platform/DataDirectory.cpp
+	Platform/DataDirectory.h
+	Rejection/CpuBvh.cpp
+	Rejection/CpuBvh.h
 	Rejection/CpuReference.cpp
 	Rejection/CpuReference.h
 	Rejection/HlslShim.h
+	Rejection/PrimitiveTests.h
 	Rejection/RejectionConfig.cpp
 	Rejection/RejectionConfig.h
 	Rejection/WorldIndex.cpp

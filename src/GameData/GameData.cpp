@@ -1,5 +1,6 @@
 #include "GameData/GameData.h"
 #include "GameData/Internal/PluginFileReader.h"
+#include "Platform/DataDirectory.h"
 
 #include <algorithm>
 #include <array>
@@ -49,10 +50,6 @@ namespace FasterNGIO::GameData
 		constexpr FourCC SIG_HEDR = MakeFourCC('H', 'E', 'D', 'R');
 		constexpr FourCC SIG_ONAM = MakeFourCC('O', 'N', 'A', 'M');
 		constexpr FourCC SIG_MODL = MakeFourCC('M', 'O', 'D', 'L');
-		constexpr FourCC SIG_MOD2 = MakeFourCC('M', 'O', 'D', '2');
-		constexpr FourCC SIG_MOD3 = MakeFourCC('M', 'O', 'D', '3');
-		constexpr FourCC SIG_MOD4 = MakeFourCC('M', 'O', 'D', '4');
-		constexpr FourCC SIG_MOD5 = MakeFourCC('M', 'O', 'D', '5');
 		constexpr FourCC SIG_MODS = MakeFourCC('M', 'O', 'D', 'S');
 		constexpr FourCC SIG_MO2S = MakeFourCC('M', 'O', '2', 'S');
 		constexpr FourCC SIG_MO3S = MakeFourCC('M', 'O', '3', 'S');
@@ -159,15 +156,6 @@ namespace FasterNGIO::GameData
 			}
 			const auto size = (std::min<std::size_t>)(260u, a_data.size() - offset);
 			return ReadString(a_data.subspan(offset, size));
-		}
-
-		[[nodiscard]] bool IsModelPathSubrecord(FourCC a_signature)
-		{
-			return a_signature == SIG_MODL ||
-			       a_signature == SIG_MOD2 ||
-			       a_signature == SIG_MOD3 ||
-			       a_signature == SIG_MOD4 ||
-			       a_signature == SIG_MOD5;
 		}
 
 		[[nodiscard]] bool IsModelTextureSwapSubrecord(FourCC a_signature)
@@ -612,16 +600,16 @@ namespace FasterNGIO::GameData
 		struct ParserContext
 		{
 			const LoadOrderEntry& entry;
-			std::span<const LoadOrderEntry> loadOrder;
+			std::span<const LoadOrderEntry> loadOrder{};
 			PluginParser::ParseMode mode{ PluginParser::ParseMode::FullRaw };
 			std::size_t sourceFileIndex{ 0 };
-			std::shared_ptr<const std::vector<FileID>> sourceMasterFileIDs;
-			std::vector<GroupPathEntry> groupPath;
-			std::optional<FormID> currentWorld;
-			std::optional<FormID> currentCell;
-			std::vector<std::uint8_t> inflateScratch;
-			std::vector<std::uint8_t> cellScanScratch;
-			InflateStream cellInflateStream;
+			std::shared_ptr<const std::vector<FileID>> sourceMasterFileIDs{};
+			std::vector<GroupPathEntry> groupPath{};
+			std::optional<FormID> currentWorld{};
+			std::optional<FormID> currentCell{};
+			std::vector<std::uint8_t> inflateScratch{};
+			std::vector<std::uint8_t> cellScanScratch{};
+			InflateStream cellInflateStream{};
 		};
 
 		void UpdateContextForGroup(ParserContext& a_context, const GroupHeader& a_group)
@@ -1852,12 +1840,13 @@ namespace FasterNGIO::GameData
 			if (!IsPluginExtension(key) || added.contains(key)) {
 				return;
 			}
-			const auto path = _dataPath / key;
-			if (!std::filesystem::exists(path)) {
+			// Plugin names are matched case-insensitively, as the game (and Proton) does.
+			const auto path = Platform::FindInDirectory(_dataPath, key);
+			if (!path) {
 				return;
 			}
 			result.push_back(LoadOrderEntry{
-				.path = path,
+				.path = *path,
 				.pluginName = key,
 			});
 			added.emplace(key, 0);
@@ -1869,9 +1858,8 @@ namespace FasterNGIO::GameData
 		appendIfPresent("HearthFires.esm");
 		appendIfPresent("Dragonborn.esm");
 
-		const auto cccPath = _dataPath.parent_path() / "Skyrim.ccc";
-		if (std::filesystem::exists(cccPath)) {
-			std::ifstream cccInput(cccPath);
+		if (const auto cccPath = Platform::FindInDirectory(_dataPath.parent_path(), "Skyrim.ccc")) {
+			std::ifstream cccInput(*cccPath);
 			std::string cccLine;
 			while (std::getline(cccInput, cccLine)) {
 				const auto trimmed = Trim(cccLine);

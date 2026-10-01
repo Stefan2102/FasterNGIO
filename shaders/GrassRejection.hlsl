@@ -1,6 +1,6 @@
-// Grass-in-object rejection as a DXR pipeline.
+// Grass-in-object rejection as a ray-tracing pipeline (DXR, or Vulkan through SPIR-V).
 //
-// Every candidate blade is one ray launch. The ray only drives traversal: it runs vertically
+// Every candidate blade is one ray launch; one dispatch covers a whole frame's candidates. The ray only drives traversal: it runs vertically
 // through the whole query volume (NGIO's capsule, or a bare ray), from r below the segment to r
 // above it, so it enters every primitive AABB (grown by the query radius) the volume can touch.
 // Procedural intersection shaders cannot read the payload, so they rebuild the exact query from
@@ -13,26 +13,16 @@
 
 struct RootConstants
 {
-	uint batchIndex;
-	uint padding;
-	uint batchTable;
+	uint tlas;
 	uint candidates;
 	uint output;
+	uint candidateCount;
+	float segmentLength;
 	// Diagnostics: the frame-global candidate index to record, or 0xFFFFFFFF.
 	uint debugCandidate;
 	uint debugBuffer;
 };
 ConstantBuffer<RootConstants> g_constants : register(b0);
-
-struct Batch
-{
-	uint tlas;
-	uint candidateOffset;
-	uint candidateCount;
-	uint outputOffset;
-	float segmentLength;
-	uint3 padding;
-};
 
 struct Payload
 {
@@ -84,8 +74,7 @@ void WriteDebug(uint stage, uint instance, uint primitive, uint result, float4 p
 
 uint CurrentCandidate()
 {
-	StructuredBuffer<Batch> batches = ResourceDescriptorHeap[g_constants.batchTable];
-	return batches[g_constants.batchIndex].candidateOffset + DispatchRaysIndex().x;
+	return DispatchRaysIndex().x;
 }
 #endif
 
@@ -113,13 +102,11 @@ struct QuerySegment
 // independent of how the ray parameterises it.
 QuerySegment ObjectQuery()
 {
-	StructuredBuffer<Batch> batches = ResourceDescriptorHeap[g_constants.batchTable];
-	Batch batch = batches[g_constants.batchIndex];
 	StructuredBuffer<float4> candidates = ResourceDescriptorHeap[g_constants.candidates];
-	float4 candidate = candidates[batch.candidateOffset + DispatchRaysIndex().x];
+	float4 candidate = candidates[DispatchRaysIndex().x];
 	float3x4 worldToObject = WorldToObject3x4();
 	float3 bottom = candidate.xyz;
-	float3 top = bottom + float3(0.0f, 0.0f, batch.segmentLength);
+	float3 top = bottom + float3(0.0f, 0.0f, g_constants.segmentLength);
 	QuerySegment s;
 	s.p = mul(worldToObject, float4(bottom, 1.0f));
 	s.q = mul(worldToObject, float4(top, 1.0f));
@@ -150,27 +137,25 @@ void Accept()
 void GrassRayGen()
 {
 	uint index = DispatchRaysIndex().x;
-	StructuredBuffer<Batch> batches = ResourceDescriptorHeap[g_constants.batchTable];
-	Batch batch = batches[g_constants.batchIndex];
-	if (index >= batch.candidateCount) {
+	if (index >= g_constants.candidateCount) {
 		return;
 	}
 	StructuredBuffer<float4> candidates = ResourceDescriptorHeap[g_constants.candidates];
-	float4 candidate = candidates[batch.candidateOffset + index];
-	RaytracingAccelerationStructure scene = ResourceDescriptorHeap[batch.tlas];
+	float4 candidate = candidates[index];
+	RaytracingAccelerationStructure scene = ResourceDescriptorHeap[g_constants.tlas];
 
 	RayDesc ray;
 #if QUERY_RAY
 	ray.Origin = candidate.xyz;
 	ray.Direction = float3(0.0f, 0.0f, 1.0f);
 	ray.TMin = 0.0f;
-	ray.TMax = batch.segmentLength;
+	ray.TMax = g_constants.segmentLength;
 #else
 	float r = candidate.w;
 	ray.Origin = float3(candidate.xy, candidate.z - r);
 	ray.Direction = float3(0.0f, 0.0f, r);
 	ray.TMin = 0.0f;
-	ray.TMax = (batch.segmentLength + 2.0f * r) / r;
+	ray.TMax = (g_constants.segmentLength + 2.0f * r) / r;
 #endif
 
 	// Both outcomes are written by a shader (closest-hit or miss): the payload is not assumed to
@@ -182,10 +167,10 @@ void GrassRayGen()
 		0xFF, 0, 1, 0, ray, payload);
 
 	RWStructuredBuffer<uint> output = ResourceDescriptorHeap[g_constants.output];
-	output[batch.outputOffset + index] = payload.hit;
+	output[index] = payload.hit;
 #if DEBUG_QUERIES
-	if (IsDebugCandidate(batch.candidateOffset + index)) {
-		WriteDebug(0, batch.tlas, 0, payload.hit, float4(ray.Origin, ray.TMax), float4(ray.Direction, 0.0f), candidate, float4(0, 0, 0, 0), float4(0, 0, 0, 0));
+	if (IsDebugCandidate(index)) {
+		WriteDebug(0, g_constants.tlas, 0, payload.hit, float4(ray.Origin, ray.TMax), float4(ray.Direction, 0.0f), candidate, float4(0, 0, 0, 0), float4(0, 0, 0, 0));
 	}
 #endif
 }

@@ -33,7 +33,7 @@ endif()
 
 function(fasterngio_configure_target target)
 	target_compile_features(${target} PUBLIC cxx_std_23)
-	target_compile_definitions(${target} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+	target_compile_definitions(${target} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 	if(MSVC)
 		target_compile_options(${target} PRIVATE /W4 /utf-8 /permissive- /Zc:__cplusplus)
 		if(FASTERNGIO_WARNINGS_AS_ERRORS)

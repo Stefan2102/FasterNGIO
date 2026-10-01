@@ -1,6 +1,7 @@
 #include "Rejection/CpuReference.h"
 
 #include "Rejection/HlslShim.h"
+#include "Rejection/PrimitiveTests.h"
 
 #include <cmath>
 #include <format>
@@ -8,34 +9,6 @@
 
 namespace FasterNGIO::Rejection
 {
-	namespace
-	{
-		using Hlsl::float3;
-
-		[[nodiscard]] float3 ToHlsl(const Float3& a_value)
-		{
-			return { a_value.x, a_value.y, a_value.z };
-		}
-
-		[[nodiscard]] bool HullContains(const Collision::CollisionModel& a_model, const Collision::Hull& a_hull, const float3& a_point)
-		{
-			for (std::uint32_t i = 0; i < a_hull.planeCount; ++i) {
-				const auto& plane = a_model.hullPlanes[a_hull.firstPlane + i];
-				if (Hlsl::OutsidePlane(Hlsl::float4{ plane.x, plane.y, plane.z, plane.w }, a_point)) {
-					return false;
-				}
-			}
-			return true;
-		}
-
-		[[nodiscard]] bool SegmentOverlapsAabb(const float3& a_p, const float3& a_q, float a_radius, const Float3& a_min, const Float3& a_max)
-		{
-			const float lo[3]{ (std::min)(a_p.x, a_q.x) - a_radius, (std::min)(a_p.y, a_q.y) - a_radius, (std::min)(a_p.z, a_q.z) - a_radius };
-			const float hi[3]{ (std::max)(a_p.x, a_q.x) + a_radius, (std::max)(a_p.y, a_q.y) + a_radius, (std::max)(a_p.z, a_q.z) + a_radius };
-			return lo[0] <= a_max.x && hi[0] >= a_min.x && lo[1] <= a_max.y && hi[1] >= a_min.y && lo[2] <= a_max.z && hi[2] >= a_min.z;
-		}
-	}
-
 	bool CapsuleOverlapsInstance(const WorldIndex& a_world, const Instance& a_instance, const Float3& a_p, const Float3& a_q, float a_radius)
 	{
 		const auto& model = a_world.Models()[a_instance.model].collision;
@@ -46,26 +19,17 @@ namespace FasterNGIO::Rejection
 			return false;
 		}
 		for (const auto& tri : model.triangles) {
-			if (Hlsl::CapsuleOverlapsTriangle(p, q, r, ToHlsl(tri.vertices[0]), ToHlsl(tri.vertices[1]), ToHlsl(tri.vertices[2]), tri.radius)) {
+			if (CapsuleOverlapsTriangle(tri, p, q, r)) {
 				return true;
 			}
 		}
 		for (const auto& hull : model.hulls) {
-			if (!SegmentOverlapsAabb(p, q, r + hull.radius, hull.aabbMin, hull.aabbMax)) {
-				continue;
-			}
-			if (HullContains(model, hull, p) || HullContains(model, hull, q)) {
+			if (CapsuleOverlapsHull(model, hull, p, q, r)) {
 				return true;
-			}
-			for (std::uint32_t i = 0; i < hull.triangleCount; ++i) {
-				const auto& tri = model.hullTriangles[hull.firstTriangle + i];
-				if (Hlsl::CapsuleOverlapsTriangle(p, q, r, ToHlsl(tri.vertices[0]), ToHlsl(tri.vertices[1]), ToHlsl(tri.vertices[2]), hull.radius)) {
-					return true;
-				}
 			}
 		}
 		for (const auto& capsule : model.capsules) {
-			if (Hlsl::CapsuleOverlapsCapsule(p, q, r, ToHlsl(capsule.p0), ToHlsl(capsule.p1), capsule.radius)) {
+			if (CapsuleOverlapsCapsule(capsule, p, q, r)) {
 				return true;
 			}
 		}

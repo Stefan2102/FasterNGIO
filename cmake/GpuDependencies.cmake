@@ -1,7 +1,12 @@
 # First-party GPU stack, built from the pinned submodules in external/ (sibling layout, so each
 # project's own ../ fallbacks resolve to the same checkouts).
 
-set(BASICRHI_ENABLE_D3D12 ON CACHE BOOL "" FORCE)
+# D3D12 is Windows-only; Vulkan is the ray-tracing API everywhere else.
+if(WIN32)
+	set(BASICRHI_ENABLE_D3D12 ON CACHE BOOL "" FORCE)
+else()
+	set(BASICRHI_ENABLE_D3D12 OFF CACHE BOOL "" FORCE)
+endif()
 # OpenRenderGraph uses rhi::vulkan interop unconditionally, so the Vulkan backend must be built.
 set(BASICRHI_ENABLE_VULKAN ON CACHE BOOL "" FORCE)
 set(BASICRHI_ENABLE_STREAMLINE OFF CACHE BOOL "" FORCE)
@@ -14,7 +19,8 @@ set(BASICTELEMETRY_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(OPENRENDERGRAPH_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(OPENRENDERGRAPH_ENABLE_DEBUG_UI OFF CACHE BOOL "" FORCE)
 set(ORG_MODULE_SERVICES_ENABLE_DXC ON CACHE BOOL "" FORCE)
-set(ORG_MODULE_SERVICES_ENABLE_VULKAN OFF CACHE BOOL "" FORCE)
+# SPIR-V output for the Vulkan backend.
+set(ORG_MODULE_SERVICES_ENABLE_VULKAN ON CACHE BOOL "" FORCE)
 set(ORG_MODULE_SERVICES_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(ORG_MODULE_SERVICES_ENABLE_ASYNC_STATE_GRAPH ON CACHE BOOL "" FORCE)
 
@@ -27,9 +33,16 @@ add_subdirectory("${FASTERNGIO_EXTERNAL_DIR}/BasicRHI" "${CMAKE_BINARY_DIR}/_dep
 add_subdirectory("${FASTERNGIO_EXTERNAL_DIR}/OpenRenderGraph" "${CMAKE_BINARY_DIR}/_deps/OpenRenderGraph" EXCLUDE_FROM_ALL)
 add_subdirectory("${FASTERNGIO_EXTERNAL_DIR}/ORGModuleServices" "${CMAKE_BINARY_DIR}/_deps/ORGModuleServices" EXCLUDE_FROM_ALL)
 
-# dxcompiler.dll / dxil.dll are loaded at runtime by ORGModuleServices' ShaderCompiler.
-find_file(FASTERNGIO_DXCOMPILER_DLL dxcompiler.dll PATH_SUFFIXES bin tools/directx-dxc REQUIRED)
-find_file(FASTERNGIO_DXIL_DLL dxil.dll PATH_SUFFIXES bin tools/directx-dxc REQUIRED)
+# The DXC runtime is loaded at startup by ORGModuleServices' ShaderCompiler: dxcompiler.dll and the
+# dxil.dll validator on Windows, libdxcompiler.so on Linux (SPIR-V needs no validator).
+if(WIN32)
+	find_file(FASTERNGIO_DXCOMPILER_DLL dxcompiler.dll PATH_SUFFIXES bin tools/directx-dxc REQUIRED)
+	find_file(FASTERNGIO_DXIL_DLL dxil.dll PATH_SUFFIXES bin tools/directx-dxc REQUIRED)
+else()
+	find_file(FASTERNGIO_DXCOMPILER_DLL libdxcompiler.so PATH_SUFFIXES lib tools/directx-dxc REQUIRED)
+	set(FASTERNGIO_DXIL_DLL "")
+endif()
+set(FASTERNGIO_DXC_RUNTIME "${FASTERNGIO_DXCOMPILER_DLL}" ${FASTERNGIO_DXIL_DLL})
 
 # Their headers are not ours to warn about.
 foreach(_fasterngio_dependency BasicRHI OpenRenderGraph ORGModuleServices BasicTelemetryCore BasicTelemetryTracy)

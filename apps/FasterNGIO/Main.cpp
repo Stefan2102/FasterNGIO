@@ -5,6 +5,7 @@
 #include "Grass/NgioCacheWriter.h"
 #include "Grass/Placement.h"
 #include "Pipeline/CellPipeline.h"
+#include "Rejection/CpuBvh.h"
 #include "Rejection/CpuReference.h"
 #include "Rejection/RejectionConfig.h"
 #include "Rejection/WorldIndex.h"
@@ -14,9 +15,12 @@
 
 #include <oneapi/tbb/global_control.h>
 #include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/task_arena.h>
 #include <spdlog/spdlog.h>
 
+#if defined(_WIN32)
 #include <Windows.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -27,6 +31,9 @@
 #include <exception>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <functional>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -43,10 +50,24 @@ namespace
 
 	[[nodiscard]] std::filesystem::path ExecutableDirectory()
 	{
+#if defined(_WIN32)
 		wchar_t buffer[MAX_PATH]{};
 		GetModuleFileNameW(nullptr, buffer, MAX_PATH);
 		return std::filesystem::path(buffer).parent_path();
+#else
+		std::error_code error;
+		return std::filesystem::read_symlink("/proc/self/exe", error).parent_path();
+#endif
 	}
+
+	enum class RejectChoice
+	{
+		// The GPU when the adapter supports it, else the CPU BVH.
+		Auto,
+		Gpu,
+		Cpu,
+		None
+	};
 
 	struct CliOptions
 	{
@@ -64,13 +85,13 @@ namespace
 		bool explicitGrassPatchSize{ false };
 		bool overwrite{ false };
 		bool collisionSurvey{ false };
-#if FASTERNGIO_HAS_GPU
-		RejectionBackend rejection{ RejectionBackend::Gpu };
-#else
-		RejectionBackend rejection{ RejectionBackend::Cpu };
-#endif
+		bool benchmarkRejection{ false };
+		RejectChoice rejection{ RejectChoice::Auto };
 		bool validateCpu{ false };
 		bool gpuDebugLayer{ false };
+#if FASTERNGIO_HAS_GPU
+		Gpu::GpuApi gpuApi{ Gpu::DefaultGpuApi() };
+#endif
 		Rejection::RejectionConfig rejectionConfig;
 		std::string dumpCollisionModel;
 		std::filesystem::path dumpCollisionPath;
@@ -84,6 +105,7 @@ namespace
 
 	[[nodiscard]] std::filesystem::path DefaultPluginsTxtPath()
 	{
+#if defined(_WIN32)
 		char* localAppData = nullptr;
 		std::size_t size = 0;
 		std::filesystem::path result;
@@ -92,6 +114,15 @@ namespace
 		}
 		std::free(localAppData);
 		return result;
+#else
+		// Steam's Proton prefix for Skyrim Special Edition (app 489830).
+		const char* home = std::getenv("HOME");
+		if (!home || !*home) {
+			return {};
+		}
+		const auto prefix = std::filesystem::path(home) / ".steam" / "steam" / "steamapps" / "compatdata" / "489830" / "pfx";
+		return prefix / "drive_c" / "users" / "steamuser" / "AppData" / "Local" / "Skyrim Special Edition" / "plugins.txt";
+#endif
 	}
 
 	[[nodiscard]] std::uint32_t ParseU32(std::string_view a_value)
@@ -122,7 +153,11 @@ namespace
 			"Usage: FasterNGIO --data <Skyrim Data> --out <cache dir> [options]\n"
 			"\n"
 			"Options:\n"
+#if defined(_WIN32)
 			"  --plugins <plugins.txt>       Defaults to %LOCALAPPDATA%\\Skyrim Special Edition\\plugins.txt\n"
+#else
+			"  --plugins <plugins.txt>       Defaults to Skyrim's plugins.txt in the Steam Proton prefix\n"
+#endif
 			"  --world <form-id>             Worldspace form ID, default 0x3C (Tamriel)\n"
 			"  --cell <x> <y>                Write one cell\n"
 			"  --radius <x> <y> <r>          Write cells within a square cell radius\n"
@@ -136,9 +171,11 @@ namespace
 			"  --overwrite                   Rebuild cache files that already exist\n"
 			"\n"
 			"Grass-in-object rejection (NGIO [RayCastConfig] equivalents):\n"
-			"  --reject <gpu|cpu|none>       Rejection backend, default gpu\n"
-			"  --validate-cpu                With --reject gpu, also run the CPU reference and compare\n"
-			"  --gpu-debug                   Enable the D3D12 debug layer\n"
+			"  --reject <auto|gpu|cpu|none>  Rejection backend. auto (default) uses the GPU when it supports\n"
+			"                                ray tracing with bindless descriptor heaps, else the CPU BVH\n"
+			"  --gpu-api <d3d12|vulkan>      Ray-tracing API, default d3d12 on Windows, vulkan elsewhere\n"
+			"  --validate-cpu                Also run the brute-force CPU reference and compare\n"
+			"  --gpu-debug                   Enable the D3D12 debug layer / Vulkan validation\n"
 			"  --ray-height <f>              Ray-cast-height, default 150\n"
 			"  --ray-depth <f>               Ray-cast-depth, default 5\n"
 			"  --ray-mode <0|1>              Ray-cast-mode: 0 ray, 1 capsule (default)\n"
@@ -147,6 +184,8 @@ namespace
 			"\n"
 			"Diagnostics:\n"
 			"  --collision-survey            Extract the collision of every model the world references and report it\n"
+			"  --benchmark-rejection         Place every selected cell in memory, then time the CPU BVH (all threads\n"
+			"                                and one) and, when available, the GPU on the same queries; writes nothing\n"
 			"  --dump-collision <model> <obj> Write one model's grass-rejecting collision as OBJ\n",
 			stdout);
 	}
@@ -205,19 +244,39 @@ namespace
 				options.overwrite = true;
 			} else if (arg == "--reject") {
 				const auto value = requireValue(arg);
-				if (value == "gpu") {
+				if (value == "auto") {
+					options.rejection = RejectChoice::Auto;
+				} else if (value == "gpu") {
 #if FASTERNGIO_HAS_GPU
-					options.rejection = RejectionBackend::Gpu;
+					options.rejection = RejectChoice::Gpu;
 #else
 					throw std::invalid_argument("this build has no GPU support");
 #endif
 				} else if (value == "cpu") {
-					options.rejection = RejectionBackend::Cpu;
+					options.rejection = RejectChoice::Cpu;
 				} else if (value == "none") {
-					options.rejection = RejectionBackend::None;
+					options.rejection = RejectChoice::None;
 				} else {
-					throw std::invalid_argument("expected --reject gpu, cpu or none");
+					throw std::invalid_argument("expected --reject auto, gpu, cpu or none");
 				}
+			} else if (arg == "--gpu-api") {
+				const auto value = requireValue(arg);
+#if FASTERNGIO_HAS_GPU
+				if (value == "d3d12") {
+#if defined(_WIN32)
+					options.gpuApi = Gpu::GpuApi::D3D12;
+#else
+					throw std::invalid_argument("D3D12 is only available on Windows");
+#endif
+				} else if (value == "vulkan") {
+					options.gpuApi = Gpu::GpuApi::Vulkan;
+				} else {
+					throw std::invalid_argument("expected --gpu-api d3d12 or vulkan");
+				}
+#else
+				(void)value;
+				throw std::invalid_argument("this build has no GPU support");
+#endif
 			} else if (arg == "--validate-cpu") {
 				options.validateCpu = true;
 			} else if (arg == "--gpu-debug") {
@@ -236,6 +295,8 @@ namespace
 				options.rejectionConfig.rayWidth = std::stof(std::string(requireValue(arg)));
 			} else if (arg == "--ray-width-mult") {
 				options.rejectionConfig.rayWidthMultiplier = std::stof(std::string(requireValue(arg)));
+			} else if (arg == "--benchmark-rejection") {
+				options.benchmarkRejection = true;
 			} else if (arg == "--collision-survey") {
 				options.collisionSurvey = true;
 			} else if (arg == "--dump-collision") {
@@ -250,9 +311,9 @@ namespace
 			throw std::invalid_argument("--data is required");
 		}
 		if (options.pluginsTxtPath.empty()) {
-			throw std::invalid_argument("--plugins is required when LOCALAPPDATA is unavailable");
+			throw std::invalid_argument("--plugins is required: no default plugins.txt location is known");
 		}
-		if (options.outputDirectory.empty() && !options.collisionSurvey && options.dumpCollisionModel.empty()) {
+		if (options.outputDirectory.empty() && !options.collisionSurvey && !options.benchmarkRejection && options.dumpCollisionModel.empty()) {
 			throw std::invalid_argument("--out is required");
 		}
 		return options;
@@ -472,10 +533,201 @@ namespace
 			spdlog::info("  outside render bounds by {:.0f}: {}", boundsOutliers[i].first, boundsOutliers[i].second);
 		}
 
+		// Per-model counts, for diffing extraction between builds or platforms.
+		if (const char* dumpPath = std::getenv("FASTERNGIO_SURVEY_DUMP")) {
+			std::vector<std::size_t> order(models.size());
+			std::iota(order.begin(), order.end(), std::size_t{ 0 });
+			std::ranges::sort(order, [&](std::size_t a, std::size_t b) { return models[a].first < models[b].first; });
+			std::ofstream dump(dumpPath);
+			for (const auto i : order) {
+				dump << models[i].first << '\t' << static_cast<int>(results[i].status) << '\t' << results[i].triangles.size() << '\t' << results[i].hulls.size() << '\t'
+				     << results[i].capsules.size() << '\n';
+			}
+		}
+
 		std::ranges::sort(noCollision, std::greater{});
 		for (std::size_t i = 0; i < (std::min<std::size_t>)(25, noCollision.size()); ++i) {
 			spdlog::info("  no collision: {} ({} references)", noCollision[i].second, noCollision[i].first);
 		}
+		return 0;
+	}
+
+
+	using ShapeMap = std::unordered_map<GameData::FormID, Rejection::QueryShape, GameData::FormIDHash>;
+
+	// Rejection throughput without placement or file writing in the measurement: every cell is
+	// placed up front, then the same queries go through each backend.
+	int BenchmarkRejection(const CliOptions& a_options, const GameData::StaticWorldSnapshot& a_snapshot, std::span<const GameData::LandInfo* const> a_lands,
+		const ShapeMap& a_shapesByGrass, std::shared_ptr<const Rejection::WorldIndex> a_world, [[maybe_unused]] void* a_gpu)
+	{
+		struct Cell
+		{
+			Grass::CellCandidates candidates;
+			std::vector<Rejection::QueryShape> shapes;
+			std::vector<std::uint32_t> cpuRejected;
+		};
+		std::vector<Cell> cells(a_lands.size());
+		auto begin = std::chrono::steady_clock::now();
+		oneapi::tbb::parallel_for(std::size_t{ 0 }, cells.size(), [&](std::size_t i) {
+			auto& cell = cells[i];
+			cell.candidates = Grass::GenerateCellCandidates(a_snapshot, *a_lands[i], a_options.placement);
+			for (const auto& group : cell.candidates.groups) {
+				cell.shapes.push_back(a_shapesByGrass.at(group.grass->formID));
+			}
+		});
+		std::uint64_t blades = 0;
+		std::uint64_t queries = 0;
+		for (const auto& cell : cells) {
+			blades += cell.candidates.blades.size();
+			for (const auto& blade : cell.candidates.blades) {
+				queries += cell.shapes[blade.groupIndex].test ? 1 : 0;
+			}
+		}
+		spdlog::info("benchmark: placed {} blade(s) ({} queries) in {} cell(s) in {:.3f}s", blades, queries, cells.size(), SecondsSince(begin));
+
+		const auto report = [&](const char* a_name, double a_seconds, std::uint64_t a_rejected) {
+			spdlog::info("benchmark: {:<24} {:8.3f}s  {:7.2f} M queries/s  rejected={}", a_name, a_seconds, static_cast<double>(queries) / a_seconds / 1.0e6, a_rejected);
+		};
+
+		begin = std::chrono::steady_clock::now();
+		const Rejection::CpuBvh bvh(*a_world);
+		spdlog::info("benchmark: CPU BVH built in {:.3f}s", SecondsSince(begin));
+		// Every measurement is repeated; the best run is reported (the first pays for warm-up).
+		constexpr int kRepeats = 5;
+		std::atomic<std::uint64_t> cpuRejected{ 0 };
+		double best = 1.0e30;
+		for (int repeat = 0; repeat < kRepeats; ++repeat) {
+			cpuRejected = 0;
+			begin = std::chrono::steady_clock::now();
+			oneapi::tbb::parallel_for(std::size_t{ 0 }, cells.size(), [&](std::size_t i) {
+				cells[i].cpuRejected = bvh.RejectCell(cells[i].candidates, cells[i].shapes);
+				std::uint64_t count = 0;
+				for (const auto word : cells[i].cpuRejected) {
+					count += static_cast<std::uint64_t>(std::popcount(word));
+				}
+				cpuRejected.fetch_add(count, std::memory_order_relaxed);
+			});
+			best = (std::min)(best, SecondsSince(begin));
+		}
+		report(std::format("CPU BVH, {} threads", oneapi::tbb::this_task_arena::max_concurrency()).c_str(), best, cpuRejected.load());
+
+		oneapi::tbb::task_arena single(1);
+		std::uint64_t singleRejected = 0;
+		begin = std::chrono::steady_clock::now();
+		single.execute([&] {
+			for (const auto& cell : cells) {
+				for (const auto word : bvh.RejectCell(cell.candidates, cell.shapes)) {
+					singleRejected += static_cast<std::uint64_t>(std::popcount(word));
+				}
+			}
+		});
+		report("CPU BVH, 1 thread", SecondsSince(begin), singleRejected);
+
+#if FASTERNGIO_HAS_GPU
+		auto* gpu = static_cast<Gpu::GpuRejector*>(a_gpu);
+		if (gpu) {
+			const auto waitAll = [](const std::vector<std::shared_ptr<Gpu::TraceJob>>& a_jobs, const std::function<void()>& a_post) {
+				std::atomic<std::size_t> remaining{ a_jobs.size() };
+				const auto done = [&remaining] {
+					if (remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+						remaining.notify_all();
+					}
+				};
+				for (const auto& job : a_jobs) {
+					if (!job->Subscribe(done)) {
+						done();
+					}
+				}
+				const auto start = std::chrono::steady_clock::now();
+				a_post();
+				for (auto left = remaining.load(std::memory_order_acquire); left != 0; left = remaining.load(std::memory_order_acquire)) {
+					remaining.wait(left, std::memory_order_acquire);
+				}
+				return SecondsSince(start);
+			};
+			const auto makeQueries = [&](const Cell& a_cell, std::vector<Gpu::Query>& a_out, std::vector<std::uint32_t>* a_blades) {
+				for (std::uint32_t b = 0; b < a_cell.candidates.blades.size(); ++b) {
+					const auto& blade = a_cell.candidates.blades[b];
+					const auto& shape = a_cell.shapes[blade.groupIndex];
+					if (shape.test) {
+						a_out.push_back({ blade.position[0], blade.position[1], blade.position[2] - shape.depth, (std::max)(shape.radius, 1.0e-3f) });
+						if (a_blades) {
+							a_blades->push_back(b);
+						}
+					}
+				}
+			};
+
+			// The world build is not part of the measurement: wait for a one-query job behind it.
+			begin = std::chrono::steady_clock::now();
+			gpu->PostWorld(a_world);
+			const std::vector<std::shared_ptr<Gpu::TraceJob>> warmup{ std::make_shared<Gpu::TraceJob>(std::vector<Gpu::Query>{ Gpu::Query{} }) };
+			waitAll(warmup, [&] { gpu->Post(warmup[0]); });
+			spdlog::info("benchmark: GPU world built in {:.3f}s", SecondsSince(begin));
+
+			// One job per cell, as the pipeline posts them.
+			std::vector<std::shared_ptr<Gpu::TraceJob>> jobs;
+			std::vector<std::vector<std::uint32_t>> jobBlades(cells.size());
+			double perCell = 1.0e30;
+			for (int repeat = 0; repeat < kRepeats; ++repeat) {
+				jobs.clear();
+				for (std::size_t i = 0; i < cells.size(); ++i) {
+					std::vector<Gpu::Query> cellQueries;
+					jobBlades[i].clear();
+					makeQueries(cells[i], cellQueries, &jobBlades[i]);
+					jobs.push_back(std::make_shared<Gpu::TraceJob>(std::move(cellQueries)));
+				}
+				perCell = (std::min)(perCell, waitAll(jobs, [&] {
+					for (const auto& job : jobs) {
+						gpu->Post(job);
+					}
+				}));
+			}
+			std::uint64_t gpuRejected = 0;
+			std::uint64_t differ = 0;
+			for (std::size_t i = 0; i < cells.size(); ++i) {
+				const auto hits = jobs[i]->Hits();
+				for (std::size_t q = 0; q < hits.size(); ++q) {
+					const auto blade = jobBlades[i][q];
+					const bool cpuHit = ((cells[i].cpuRejected[blade / 32] >> (blade % 32)) & 1u) != 0;
+					gpuRejected += hits[q] != 0 ? 1 : 0;
+					differ += (hits[q] != 0) != cpuHit ? 1 : 0;
+				}
+			}
+			report(std::format("GPU {}, per-cell jobs", Gpu::GpuApiName(a_options.gpuApi)).c_str(), perCell, gpuRejected);
+
+			// The same queries in a few large jobs: the GPU's own throughput, without per-job overhead.
+			std::vector<std::shared_ptr<Gpu::TraceJob>> large;
+			double bulk = 1.0e30;
+			for (int repeat = 0; repeat < kRepeats; ++repeat) {
+				large.clear();
+				std::vector<Gpu::Query> pending;
+				for (const auto& cell : cells) {
+					makeQueries(cell, pending, nullptr);
+					if (pending.size() >= (1u << 20)) {
+						large.push_back(std::make_shared<Gpu::TraceJob>(std::move(pending)));
+						pending = {};
+					}
+				}
+				if (!pending.empty()) {
+					large.push_back(std::make_shared<Gpu::TraceJob>(std::move(pending)));
+				}
+				bulk = (std::min)(bulk, waitAll(large, [&] {
+					for (const auto& job : large) {
+						gpu->Post(job);
+					}
+				}));
+			}
+			std::uint64_t bulkRejected = 0;
+			for (const auto& job : large) {
+				for (const auto hit : job->Hits()) {
+					bulkRejected += hit != 0 ? 1 : 0;
+				}
+			}
+			report(std::format("GPU {}, 1M-query jobs", Gpu::GpuApiName(a_options.gpuApi)).c_str(), bulk, bulkRejected);
+			spdlog::info("benchmark: GPU and CPU BVH disagree on {} of {} queries", differ, queries);
+		}
+#endif
 		return 0;
 	}
 
@@ -512,10 +764,12 @@ namespace
 			return *lhs->cellY == *rhs->cellY ? *lhs->cellX < *rhs->cellX : *lhs->cellY < *rhs->cellY;
 		});
 
-		std::filesystem::create_directories(a_options.outputDirectory);
+		if (!a_options.benchmarkRejection) {
+			std::filesystem::create_directories(a_options.outputDirectory);
+		}
 		spdlog::info("world {} ({:08X}): {} cell(s) -> {}", worldEditorID, a_options.worldFormID.value, lands.size(), a_options.outputDirectory.string());
 
-		std::unordered_map<GameData::FormID, Rejection::QueryShape, GameData::FormIDHash> shapesByGrass;
+		ShapeMap shapesByGrass;
 		float maxReach = 0.0f;
 		for (const auto& [formID, grass] : snapshot.grassesByFormID) {
 			const auto shape = Rejection::MakeQueryShape(a_options.rejectionConfig, grass);
@@ -524,30 +778,42 @@ namespace
 		}
 
 		const auto generationBegin = std::chrono::steady_clock::now();
+		auto backend = a_options.rejection == RejectChoice::None ? RejectionBackend::None : RejectionBackend::Cpu;
 #if FASTERNGIO_HAS_GPU
 		// Device and pipeline creation (shader compile) is the only step that waits on the render
 		// thread; the world is then posted and builds while the CPU places grass.
 		std::optional<Gpu::GpuRejector> gpu;
-		if (a_options.rejection == Pipeline::RejectionBackend::Gpu) {
+		if (a_options.rejection == RejectChoice::Auto || a_options.rejection == RejectChoice::Gpu) {
 			float maxRadius = 0.0f;
 			for (const auto& [formID, shape] : shapesByGrass) {
 				maxRadius = (std::max)(maxRadius, shape.radius);
 			}
 			const auto exeDirectory = ExecutableDirectory();
-			gpu.emplace(Gpu::GpuRejectorDesc{
-				.shaderDirectory = exeDirectory / "shaders",
-				.shaderCacheDirectory = exeDirectory / "shadercache",
-				.mode = a_options.rejectionConfig.mode,
-				.segmentLength = a_options.rejectionConfig.rayDepth + a_options.rejectionConfig.rayHeight,
-				.maxQueryRadius = maxRadius,
-				.debugLayer = a_options.gpuDebugLayer,
-			});
+			try {
+				gpu.emplace(Gpu::GpuRejectorDesc{
+					.api = a_options.gpuApi,
+					.shaderDirectory = exeDirectory / "shaders",
+					.shaderCacheDirectory = exeDirectory / "shadercache",
+					.mode = a_options.rejectionConfig.mode,
+					.segmentLength = a_options.rejectionConfig.rayDepth + a_options.rejectionConfig.rayHeight,
+					.maxQueryRadius = maxRadius,
+					.debugLayer = a_options.gpuDebugLayer,
+				});
+				backend = RejectionBackend::Gpu;
+			} catch (const std::exception& e) {
+				if (a_options.rejection == RejectChoice::Gpu) {
+					throw;
+				}
+				spdlog::warn("GPU rejection unavailable, using the CPU BVH: {}", e.what());
+			}
 		}
 #endif
+		spdlog::info("rejection: {}", backend == RejectionBackend::Gpu ? "GPU" : backend == RejectionBackend::Cpu ? "CPU BVH" : "off");
 
 		std::optional<Archives::ArchiveResolver> resolver;
 		std::shared_ptr<const Rejection::WorldIndex> worldIndex;
-		if (a_options.rejection != Pipeline::RejectionBackend::None) {
+		std::optional<Rejection::CpuBvh> cpuBvh;
+		if (backend != RejectionBackend::None) {
 			resolver.emplace(MakeResolver(a_options, world));
 			worldIndex = std::make_shared<const Rejection::WorldIndex>(snapshot, a_options.worldFormID, *resolver, a_options.rejectionConfig, maxReach);
 			const auto& stats = worldIndex->Stats();
@@ -560,6 +826,27 @@ namespace
 				stats.referencesWithCollision,
 				stats.references,
 				stats.referencesIgnored);
+		}
+		if (a_options.benchmarkRejection) {
+			if (!worldIndex) {
+				throw std::invalid_argument("--benchmark-rejection needs rejection enabled");
+			}
+#if FASTERNGIO_HAS_GPU
+			return BenchmarkRejection(a_options, snapshot, lands, shapesByGrass, worldIndex, gpu ? std::addressof(*gpu) : nullptr);
+#else
+			return BenchmarkRejection(a_options, snapshot, lands, shapesByGrass, worldIndex, nullptr);
+#endif
+		}
+		if (backend == RejectionBackend::Cpu) {
+			cpuBvh.emplace(*worldIndex);
+			const auto& stats = cpuBvh->Stats();
+			spdlog::info("cpu bvh: {} model BVH(s) over {} primitive(s) ({} nodes), {} instance(s) ({} nodes) built in {:.3f}s",
+				stats.models,
+				stats.primitives,
+				stats.modelNodes,
+				stats.instances,
+				stats.instanceNodes,
+				stats.buildSeconds);
 		}
 #if FASTERNGIO_HAS_GPU
 		if (gpu) {
@@ -575,8 +862,9 @@ namespace
 		pipeline.placement = a_options.placement;
 		pipeline.overwrite = a_options.overwrite;
 		pipeline.shapesByGrass = &shapesByGrass;
-		pipeline.backend = a_options.rejection;
+		pipeline.backend = backend;
 		pipeline.world = worldIndex.get();
+		pipeline.cpuBvh = cpuBvh ? std::addressof(*cpuBvh) : nullptr;
 #if FASTERNGIO_HAS_GPU
 		pipeline.gpu = gpu ? std::addressof(*gpu) : nullptr;
 #endif
@@ -598,7 +886,7 @@ namespace
 		}
 #endif
 		if (a_options.validateCpu) {
-			spdlog::info("validation: {} blade(s) differ between GPU and CPU reference", stats.validationMismatches);
+			spdlog::info("validation: {} blade(s) differ from the brute-force CPU reference", stats.validationMismatches);
 		}
 		spdlog::info(
 			"wrote {} file(s), skipped {}, failed {}, blades={} rejected={} in {:.2f}s (total {:.2f}s)",

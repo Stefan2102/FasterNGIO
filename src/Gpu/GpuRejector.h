@@ -9,6 +9,8 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace FasterNGIO::Gpu
@@ -65,8 +67,38 @@ namespace FasterNGIO::Gpu
 		std::atomic<Subscriber*> _subscribers{ nullptr };
 	};
 
+	enum class GpuApi
+	{
+		D3D12,
+		Vulkan
+	};
+
+	// D3D12 on Windows; Vulkan everywhere else (native Linux, no Proton).
+	[[nodiscard]] constexpr GpuApi DefaultGpuApi()
+	{
+#if defined(_WIN32)
+		return GpuApi::D3D12;
+#else
+		return GpuApi::Vulkan;
+#endif
+	}
+
+	[[nodiscard]] constexpr const char* GpuApiName(GpuApi a_api)
+	{
+		return a_api == GpuApi::D3D12 ? "D3D12" : "Vulkan";
+	}
+
+	// The adapter (or this build) cannot run the ray-tracing path. what() lists every missing
+	// requirement; callers fall back to the CPU BVH.
+	class GpuUnsupportedError : public std::runtime_error
+	{
+	public:
+		using std::runtime_error::runtime_error;
+	};
+
 	struct GpuRejectorDesc
 	{
+		GpuApi api{ DefaultGpuApi() };
 		// Directory holding GrassRejection.hlsl and Shared/.
 		std::filesystem::path shaderDirectory;
 		// Compiled-shader cache; empty disables the disk cache.
@@ -82,6 +114,7 @@ namespace FasterNGIO::Gpu
 
 	struct GpuRejectorStats
 	{
+		std::string adapter;
 		std::uint64_t models{ 0 };
 		std::uint64_t instances{ 0 };
 		std::uint64_t blasBytes{ 0 };
@@ -91,13 +124,14 @@ namespace FasterNGIO::Gpu
 		double worldBuildSeconds{ 0.0 };
 	};
 
-	// Tests grass queries against a world's collision with DXR. All GPU work runs on one render
+	// Tests grass queries against a world's collision with hardware ray tracing (DXR or Vulkan). All GPU work runs on one render
 	// thread that owns an OpenRenderGraph persistent host. Callers never block on it: work is
 	// posted through a lock-free inbox and results come back through each TraceJob.
 	class GpuRejector
 	{
 	public:
-		// Creates the device and pipeline; throws if the adapter cannot run DXR.
+		// Creates the device and pipeline. Throws GpuUnsupportedError when the adapter lacks a
+		// required feature, and std::runtime_error for any other failure.
 		explicit GpuRejector(GpuRejectorDesc a_desc);
 		~GpuRejector();
 		GpuRejector(const GpuRejector&) = delete;

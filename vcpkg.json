@@ -4,7 +4,7 @@
   "version-string": "0.1.0",
   "description": "GPU-accelerated NGIO-compatible grass cache generator for Skyrim Special Edition.",
   "license": "GPL-3.0-or-later",
-  "supports": "windows & x64",
+  "supports": "x64 & (windows | linux)",
   "dependencies": [
     "zlib",
     "lz4",
@@ -23,6 +23,10 @@
       "dependencies": [
         "directx-headers",
         "directx-dxc",
+        {
+          "name": "directxmath",
+          "platform": "!windows"
+        },
         "flecs",
         "boost-container-hash",
         "nlohmann-json",

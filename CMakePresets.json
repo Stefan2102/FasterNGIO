@@ -42,15 +42,85 @@
       "cacheVariables": {
         "FASTERNGIO_WARNINGS_AS_ERRORS": "ON"
       }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux GCC (Vulkan)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-linux",
+        "FASTERNGIO_ENABLE_GPU": "ON",
+        "VCPKG_MANIFEST_FEATURES": "gpu"
+      }
+    },
+    {
+      "name": "linux-cpu",
+      "displayName": "Linux GCC (CPU only)",
+      "inherits": "linux",
+      "cacheVariables": {
+        "FASTERNGIO_ENABLE_GPU": "OFF",
+        "VCPKG_MANIFEST_FEATURES": ""
+      }
     }
   ],
   "buildPresets": [
-    { "name": "vs2026", "configurePreset": "vs2026", "configuration": "RelWithDebInfo" },
-    { "name": "vs2026-cpu", "configurePreset": "vs2026-cpu", "configuration": "RelWithDebInfo" },
-    { "name": "vs2026-clangcl", "configurePreset": "vs2026-clangcl", "configuration": "RelWithDebInfo" }
+    {
+      "name": "vs2026",
+      "configurePreset": "vs2026",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "vs2026-cpu",
+      "configurePreset": "vs2026-cpu",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "vs2026-clangcl",
+      "configurePreset": "vs2026-clangcl",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux"
+    },
+    {
+      "name": "linux-cpu",
+      "configurePreset": "linux-cpu"
+    }
   ],
   "testPresets": [
-    { "name": "vs2026", "configurePreset": "vs2026", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } },
-    { "name": "vs2026-cpu", "configurePreset": "vs2026-cpu", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } }
+    {
+      "name": "vs2026",
+      "configurePreset": "vs2026",
+      "configuration": "RelWithDebInfo",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "vs2026-cpu",
+      "configurePreset": "vs2026-cpu",
+      "configuration": "RelWithDebInfo",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-cpu",
+      "configurePreset": "linux-cpu",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
   ]
 }

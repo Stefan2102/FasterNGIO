@@ -42,5 +42,17 @@ namespace FasterNGIO::Rejection::Hlsl
 	[[nodiscard]] inline constexpr float min(float a, float b) { return a < b ? a : b; }
 	[[nodiscard]] inline constexpr float max(float a, float b) { return a > b ? a : b; }
 
+	// Internal linkage: the .hlsli's functions are not marked inline (HLSL has no ODR), and several
+	// translation units include them.
+	namespace
+	{
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include "../../shaders/Shared/GrassQueryMath.hlsli"
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+	}
 }

@@ -39,7 +39,7 @@ namespace FasterNGIO::Rejection
 	struct ModelRecord
 	{
 		std::string path;
-		Collision::CollisionModel collision;
+		Collision::CollisionModel collision{};
 	};
 
 	// One placed reference whose model has grass-rejecting collision.

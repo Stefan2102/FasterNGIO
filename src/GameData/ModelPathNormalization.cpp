@@ -110,7 +110,6 @@ namespace FasterNGIO::GameData
 			(void)formID;
 			const auto* record = chain.Winning();
 			if (!record || record->IsDeleted() || record->IsIgnored()) continue;
-			const auto recordData = record->Data();
 			for (const auto& subrecord : record->subrecords) {
 				if (IsModelPathSubrecord(subrecord.signature)) {
 					addPath(*record, subrecord, ReadString(SubrecordData(*record, subrecord)), false);

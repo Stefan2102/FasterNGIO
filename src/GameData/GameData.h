@@ -85,7 +85,7 @@ namespace FasterNGIO::GameData
 		std::string pluginName;
 		ModuleKind kind{ ModuleKind::Full };
 		FileID fileID{};
-		std::vector<std::string> masters;
+		std::vector<std::string> masters{};
 		std::uint32_t headerFlags{ 0 };
 		std::uint32_t recordCount{ 0 };
 	};
