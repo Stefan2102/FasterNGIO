@@ -3,7 +3,9 @@
 #include "Pipeline/MpscQueue.h"
 
 #include <OpenRenderGraph/PersistentGraphHost.h>
+#if FASTERNGIO_RUNTIME_SHADER_COMPILER
 #include <ORGModuleServices/ShaderCompiler.h>
+#endif
 #include <Render/Runtime/RuntimeDevice.h>
 #include <Render/Runtime/ThreadPoolTaskService.h>
 #include <RenderPasses/Base/TypedRenderGraphPass.h>
@@ -662,7 +664,9 @@ namespace FasterNGIO::Gpu
 				_gpuUploadHeap ? "yes" : "no");
 		}
 
-		void CreatePipeline()
+#if FASTERNGIO_RUNTIME_SHADER_COMPILER
+		// Compiles GrassRejection.hlsl for the API (DXIL or SPIR-V), through the disk cache.
+		std::vector<std::byte> LoadShaderLibrary() const
 		{
 			const auto shaderPath = _desc.shaderDirectory / "GrassRejection.hlsl";
 			std::ifstream file(shaderPath, std::ios::binary);
@@ -689,7 +693,37 @@ namespace FasterNGIO::Gpu
 			if (!artifact) {
 				throw std::runtime_error("GPU: shader compilation failed:\n" + artifact.diagnostics);
 			}
-			_shaderBinary = artifact.binary;
+			return artifact.binary;
+		}
+#else
+		// Loads the SPIR-V variant compiled at build time (apps/FasterNGIO/CMakeLists.txt): one per
+		// QUERY_RAY and DEBUG_QUERIES value.
+		std::vector<std::byte> LoadShaderLibrary() const
+		{
+			if (_desc.api != GpuApi::Vulkan) {
+				throw GpuUnsupportedError("this build has only precompiled SPIR-V shaders, which need Vulkan");
+			}
+			std::string name = _desc.mode == Rejection::QueryMode::Ray ? "GrassRejection.ray" : "GrassRejection.shape";
+			if (std::getenv("FASTERNGIO_DEBUG_CANDIDATE")) {
+				name += ".debug";
+			}
+			const auto shaderPath = _desc.shaderDirectory / (name + ".spv");
+			std::ifstream file(shaderPath, std::ios::binary);
+			if (!file) {
+				throw GpuUnsupportedError("missing precompiled shader " + shaderPath.string());
+			}
+			const std::vector<char> binary{ std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
+			if (binary.empty() || binary.size() % 4 != 0) {
+				throw std::runtime_error("GPU: " + shaderPath.string() + " is not SPIR-V");
+			}
+			const auto bytes = std::as_bytes(std::span(binary));
+			return { bytes.begin(), bytes.end() };
+		}
+#endif
+
+		void CreatePipeline()
+		{
+			_shaderBinary = LoadShaderLibrary();
 
 			rhi::PushConstantRangeDesc constants{};
 			constants.visibility = rhi::ShaderStage::All;

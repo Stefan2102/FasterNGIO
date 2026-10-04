@@ -81,7 +81,8 @@ namespace
 		std::optional<std::int32_t> centerCellX;
 		std::optional<std::int32_t> centerCellY;
 		std::optional<std::int32_t> radius;
-		Grass::PlacementSettings placement;
+		// The library defaults to vanilla (engine parity); the tool defaults to smooth.
+		Grass::PlacementSettings placement{ .mode = Grass::PlacementMode::Smooth };
 		// Command-line values for settings the game's INIs also provide; these override the INIs.
 		std::optional<std::uint32_t> cliMaxGrassTypes;
 		std::optional<std::uint32_t> cliMinGrassSize;
@@ -175,8 +176,8 @@ namespace
 			"  --grass-eval-size <n>         Grass eval size, default 2\n"
 			"  --alpha-threshold <f>         fTexturePctThreshold, default 0\n"
 			"  --water-height <f>            Cell water height fallback\n"
-			"  --placement <vanilla|smooth>  vanilla (default) reproduces the engine; smooth evaluates a continuous,\n"
-			"                                seam-free texture-weight field at every blade\n"
+			"  --placement <smooth|vanilla>  smooth (default) evaluates a continuous, seam-free texture-weight\n"
+			"                                field at every blade; vanilla reproduces the engine\n"
 			"  --smooth-coverage <lo> <hi>   Smooth: texture weight ramp from no grass to full density (0.05 0.5)\n"
 			"  --smooth-density-bias <f>     Smooth: coverage multiplier before the cap at full density, shifting\n"
 			"                                grass from texture cores into blends (1.6; 1 is proportional to weight)\n"
@@ -916,7 +917,7 @@ namespace
 		const auto generationBegin = std::chrono::steady_clock::now();
 		auto backend = a_options.rejection == RejectChoice::None ? RejectionBackend::None : RejectionBackend::Cpu;
 #if FASTERNGIO_HAS_GPU
-		// Device and pipeline creation (shader compile) is the only step that waits on the render
+		// Device and pipeline creation (shader compile on Windows) is the only step that waits on the render
 		// thread; the world is then posted and builds while the CPU places grass.
 		std::optional<Gpu::GpuRejector> gpu;
 		if (a_options.rejection == RejectChoice::Auto || a_options.rejection == RejectChoice::Gpu) {

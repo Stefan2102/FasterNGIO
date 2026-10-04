@@ -18,7 +18,7 @@ namespace FasterNGIO::Grass
 	{
 		// The engine's algorithm, bit for bit (RNG order included).
 		Vanilla,
-		// Experimental: density evaluated per blade from a continuous texture-weight field.
+		// Density evaluated per blade from a continuous texture-weight field (the tool's default).
 		Smooth
 	};
 

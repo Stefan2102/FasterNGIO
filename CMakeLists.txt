@@ -18,6 +18,12 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(Tracy CONFIG REQUIRED)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+	# The C++ runtime goes into the executable, so it needs only glibc and runs on distributions
+	# whose libstdc++ is older than the compiler that built it.
+	add_link_options(-static-libstdc++ -static-libgcc)
+endif()
+
 add_subdirectory(cmake/nifly)
 
 if(FASTERNGIO_ENABLE_GPU)

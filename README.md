@@ -12,7 +12,8 @@ FasterNGIO --data "<Skyrim>\Data" --out "<mod>\Grass" [--world 0x3C] [--plugins 
 Run it under Mod Organizer 2 (so the virtual Data folder is visible) and use `--help` for the
 placement and NGIO `[RayCastConfig]` options. On Linux it runs natively (no Proton): Data paths are
 resolved case-insensitively as the game does, and `--plugins` defaults to the Steam Proton prefix's
-`plugins.txt`.
+`plugins.txt`. The Linux build needs only glibc and, for GPU rejection, a Vulkan driver with ray tracing and
+`VK_EXT_descriptor_heap`; its shaders are compiled at build time.
 
 Grass settings come from the game's INIs, as the game would read them: `iMinGrassSize`,
 `iMaxGrassTypesPerTexure` and `fTexturePctThreshold` from `[Grass]` in `Skyrim.ini` then
@@ -23,9 +24,9 @@ them.
 
 Placement (`--placement`):
 
-- `vanilla` (default): the engine's own algorithm. Its grass follows the terrain's 512-unit patch,
+- `vanilla`: the engine's own algorithm. Its grass follows the terrain's 512-unit patch,
   quadrant and cell grids, which is where the blocky edges and straight seams come from.
-- `smooth`: each blade's density comes from the texture weights at its own position, merged across
+- `smooth` (default): each blade's density comes from the texture weights at its own position, merged across
   quadrants and cells and interpolated, so edges follow the painted terrain instead of the grids.
   Each grass type is scaled so its total over the worldspace matches vanilla's (within a couple of
   percent). `--smooth-density-bias`, `--smooth-coverage` and `--smooth-warp` tune how blends look.

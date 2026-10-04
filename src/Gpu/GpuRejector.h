@@ -99,9 +99,10 @@ namespace FasterNGIO::Gpu
 	struct GpuRejectorDesc
 	{
 		GpuApi api{ DefaultGpuApi() };
-		// Directory holding GrassRejection.hlsl and Shared/.
+		// Directory holding GrassRejection.hlsl and Shared/ (Windows), or the build's precompiled
+		// GrassRejection.*.spv variants (elsewhere).
 		std::filesystem::path shaderDirectory;
-		// Compiled-shader cache; empty disables the disk cache.
+		// Compiled-shader cache for the runtime compiler; empty disables the disk cache.
 		std::filesystem::path shaderCacheDirectory;
 		Rejection::QueryMode mode{ Rejection::QueryMode::Capsule };
 		// depth + height: the length of every query segment.

@@ -64,6 +64,9 @@ if(FASTERNGIO_ENABLE_GPU)
 			ORGModuleServices::ORGModuleServices
 	)
 	target_compile_definitions(FasterNGIOGpu PUBLIC FASTERNGIO_HAS_GPU=1)
+	if(FASTERNGIO_RUNTIME_SHADER_COMPILER)
+		target_compile_definitions(FasterNGIOGpu PRIVATE FASTERNGIO_RUNTIME_SHADER_COMPILER=1)
+	endif()
 endif()
 
 add_library(FasterNGIOPipeline STATIC

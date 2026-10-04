@@ -34,14 +34,30 @@ cmake --preset linux -DVulkan_INCLUDE_DIR=<Vulkan-Headers>/include   # or linux-
 cmake --build --preset linux && ctest --preset linux
 ```
 
+`build.cmd [all|windows|linux] [cpu] [test]` builds the `vs2026` preset and then, under WSL
+(`FASTERNGIO_WSL_DISTRO`, default Ubuntu), runs `tools/build_linux.sh`, which also builds natively. It
+takes `VCPKG_ROOT`, `VULKAN_HEADERS_DIR`, `FASTERNGIO_DXC_EXECUTABLE` and `FASTERNGIO_BUILD_DIR` from
+the environment or from an untracked `build-linux.env` in the repository root; keep machine paths there.
+
 vcpkg (`VCPKG_ROOT`) provides zlib, lz4, TBB, spdlog, fmt, gtest, Tracy and, for the GPU build,
 directx-headers, directx-dxc, flecs, boost-container-hash, nlohmann-json, sqlite3 and (off Windows)
 directxmath. Vulkan headers must include `VK_EXT_descriptor_heap` (Vulkan SDK 1.4.357 or the matching
 Vulkan-Headers tag); distribution headers are usually too old. Off Windows, DirectX-Headers'
-`wsl/winadapter.h` supplies the Win32 scalar types the shared libraries use. Shaders and the DXC
-runtime (`dxcompiler.dll`/`dxil.dll`, `libdxcompiler.so`) are deployed next to the exe by the
-`FasterNGIOShaders` target and compiled (with a disk cache) at startup. `vs2026-clangcl` builds with
-`-Werror`.
+`wsl/winadapter.h` supplies the Win32 scalar types the shared libraries use. `vs2026-clangcl` builds
+with `-Werror`.
+
+Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
+
+- **Windows:** the HLSL and the DXC runtime (`dxcompiler.dll`, `dxil.dll`); the library is compiled
+  for D3D12 or Vulkan at startup, with a disk cache.
+- **Elsewhere** (`FASTERNGIO_PRECOMPILED_SHADERS`, which can also be turned on in a Windows build to
+  test it): Vulkan only, with every `QUERY_RAY`/`DEBUG_QUERIES` variant compiled to
+  `shaders/GrassRejection.<ray|shape>[.debug].spv` at build time, so the executable needs no DXC.
+  The build-time `dxc` is vcpkg's unless `FASTERNGIO_DXC_EXECUTABLE` names another; vcpkg's Linux
+  binary needs glibc 2.38, and conda-forge's `directx-shader-compiler` runs on older systems. A new
+  shader define needs a variant in `apps/FasterNGIO/CMakeLists.txt` and `GpuRejector`'s
+  `LoadShaderLibrary`.
+- **Linux binaries** link libstdc++ and libgcc statically and need only glibc and a Vulkan driver.
 
 ## Load-bearing rules
 
@@ -83,7 +99,7 @@ runtime (`dxcompiler.dll`/`dxil.dll`, `libdxcompiler.so`) are deployed next to t
   for the GPU.
 - `--benchmark-rejection` places every selected cell in memory and times the CPU BVH (all threads and
   one) and the GPU on the same queries, without file I/O.
-- `FASTERNGIO_DEBUG_CANDIDATE=<frame-global candidate index>` compiles shader debug capture in and logs
+- `FASTERNGIO_DEBUG_CANDIDATE=<frame-global candidate index>` selects the shader variant with debug capture and logs
   every raygen/intersection invocation for that candidate. Use with `--cell` so the index is the cell's
   query index.
 - `--export-blades <file>` writes every placed blade (x, y, grass form ID) for the selected cells;
