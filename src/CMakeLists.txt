@@ -70,6 +70,8 @@ add_library(FasterNGIOCore STATIC
 	Rejection/RejectionFeatures.h
 	Rejection/WorldIndex.cpp
 	Rejection/WorldIndex.h
+	Seasons/SeasonSwaps.cpp
+	Seasons/SeasonSwaps.h
 	../shaders/Shared/GrassQueryMath.hlsli
 	../shaders/Shared/RejectionLayout.hlsli
 )

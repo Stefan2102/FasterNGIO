@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace FasterNGIO::Grass
@@ -67,6 +68,8 @@ namespace FasterNGIO::Grass
 		std::optional<float> waterHeight;
 		// NGIO's Global-grass-scale: multiplies every blade's final scale.
 		float globalScale{ 1.0f };
+		// Seasons of Skyrim: a land texture -> the land texture whose grass list it takes this season.
+		const std::unordered_map<GameData::FormID, GameData::FormID, GameData::FormIDHash>* landTextureGrass{ nullptr };
 	};
 
 	// One output group (one GRAS) of a cell, in first-use order.

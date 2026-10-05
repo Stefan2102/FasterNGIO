@@ -2,6 +2,7 @@
 
 #include "Diagnostics.h"
 #include "NgioConfig.h"
+#include "SeasonsConfig.h"
 #include "WorldSetup.h"
 
 #include "Grass/CellCache.h"
@@ -63,6 +64,8 @@ namespace FasterNGIO::App
 			std::chrono::steady_clock::time_point begin;
 			// Writes every world's files, so a world's last files overlap the next world's preparation.
 			Pipeline::FileWriterPool& writer;
+			// Seasons of Skyrim's seasons that get their own caches (none without Seasons).
+			const ResolvedSeasons& seasons;
 			// Opened for the first world with rejection, then shared (read-only).
 			std::optional<Archives::ArchiveResolver> resolver{};
 			// Set when the GPU turned out to be unsupported, so later worlds go straight to the CPU BVH.
@@ -86,7 +89,7 @@ namespace FasterNGIO::App
 		// Windows, is the only step that waits on the render thread), else the CPU BVH; the collision
 		// index and whichever structure the backend traces. The GPU builds its world while the CPU
 		// places grass.
-		[[nodiscard]] WorldRejection SetUpRejection(RunShared& a_shared, GameData::FormID a_worldFormID)
+		[[nodiscard]] WorldRejection SetUpRejection(RunShared& a_shared, GameData::FormID a_worldFormID, const Rejection::RejectionFeatures& a_features)
 		{
 			const auto& options = a_shared.options;
 			WorldRejection rejection;
@@ -117,7 +120,7 @@ namespace FasterNGIO::App
 			if (!a_shared.resolver) {
 				a_shared.resolver.emplace(MakeResolver(options, a_shared.plugins));
 			}
-			rejection.index = BuildWorldIndex(a_shared.plugins.snapshot, a_worldFormID, *a_shared.resolver, a_shared.options.rejectionFeatures, a_shared.shapes.maxReach);
+			rejection.index = BuildWorldIndex(a_shared.plugins.snapshot, a_worldFormID, *a_shared.resolver, a_features, a_shared.shapes.maxReach);
 			ThrowIfStopped(a_shared.control);
 			if (rejection.backend == RejectionBackend::Cpu) {
 				rejection.cpuBvh = std::make_unique<Rejection::CpuBvh>(*rejection.index);
@@ -163,62 +166,131 @@ namespace FasterNGIO::App
 			std::shared_ptr<Pipeline::WriteTally> tally{};
 		};
 
+		void Accumulate(Pipeline::CellPipelineStats& a_total, const Pipeline::CellPipelineStats& a_pass)
+		{
+			a_total.cellsWritten += a_pass.cellsWritten;
+			a_total.cellsSkipped += a_pass.cellsSkipped;
+			a_total.cellsFailed += a_pass.cellsFailed;
+			a_total.cellsCancelled += a_pass.cellsCancelled;
+			a_total.blades += a_pass.blades;
+			a_total.bladesRejected += a_pass.bladesRejected;
+			a_total.validationMismatches += a_pass.validationMismatches;
+			a_total.bladesMoved += a_pass.bladesMoved;
+		}
+
+		[[nodiscard]] std::string DescribePass(const SeasonPass& a_pass)
+		{
+			std::string names;
+			for (const auto& suffix : a_pass.suffixes) {
+				names += std::format("{}{}", names.empty() ? "" : ", ", suffix.empty() ? "plain" : suffix);
+			}
+			if (a_pass.landTextureGrass.empty() && a_pass.baseObjects.empty()) {
+				return names;
+			}
+			return std::format("{} ({} land texture grass swap(s), {} object swap(s))", names, a_pass.landTextureGrass.size(), a_pass.baseObjects.size());
+		}
+
+		// One world: a pass per distinct set of season swaps (just the plain one without Seasons of
+		// Skyrim), each writing its cells under every name it covers. Passes that swap objects trace
+		// against their own collision index; the others share the plain one.
 		WorldResult RunWorld(RunShared& a_shared, GameData::FormID a_worldFormID)
 		{
 			const auto& options = a_shared.options;
 			const auto& control = a_shared.control;
 			const auto& snapshot = a_shared.plugins.snapshot;
 			SetStage(control, RunStage::Preparing);
-			auto lands = SelectLands(snapshot, a_worldFormID, options);
+			const auto lands = SelectLands(snapshot, a_worldFormID, options);
+			const auto worldEditorID = Grass::ResolveWorldEditorID(snapshot, a_worldFormID);
+			auto passes = PlanSeasonPasses(a_shared.seasons, snapshot, worldEditorID, options.rejection != RejectChoice::None);
+			// The passes that share the plain collision run first, so it is posted to the GPU once.
+			std::stable_partition(passes.begin() + 1, passes.end(), [](const SeasonPass& a_pass) { return a_pass.baseObjects.empty(); });
 			if (control.progress) {
 				control.progress->cellsDone.store(0, std::memory_order_relaxed);
-				control.progress->cellsTotal.store(static_cast<std::uint32_t>(lands.size()), std::memory_order_relaxed);
+				control.progress->cellsTotal.store(static_cast<std::uint32_t>(lands.size() * passes.size()), std::memory_order_relaxed);
 			}
-			const auto placement = PrepareWorldPlacement(snapshot, a_worldFormID, a_shared.placement);
-			ThrowIfStopped(control);
-
-			const auto worldEditorID = Grass::ResolveWorldEditorID(snapshot, a_worldFormID);
 			std::filesystem::create_directories(options.outputDirectory);
 			spdlog::info("world {} ({:08X}): {} cell(s) -> {}", worldEditorID, a_worldFormID.value, lands.size(), options.outputDirectory.string());
-
-			const auto generationBegin = std::chrono::steady_clock::now();
-			const auto rejection = SetUpRejection(a_shared, a_worldFormID);
-
-			auto tally = std::make_shared<Pipeline::WriteTally>();
-			Pipeline::CellPipelineDesc pipeline;
-			pipeline.snapshot = &snapshot;
-			pipeline.lands = std::move(lands);
-			pipeline.worldEditorID = worldEditorID;
-			pipeline.outputDirectory = options.outputDirectory;
-			pipeline.placement = placement.settings;
-			pipeline.overwrite = options.overwrite;
-			pipeline.shapesByGrass = &a_shared.shapes.byGrass;
-			pipeline.backend = rejection.backend;
-			pipeline.world = rejection.index.get();
-			pipeline.cpuBvh = rejection.cpuBvh.get();
-			pipeline.gpu = rejection.gpu;
-			pipeline.validateCpu = options.validateCpu;
-			const auto& features = options.rejectionFeatures;
-			std::optional<Grass::LandTextureMask> textureMask;
-			if (rejection.backend != RejectionBackend::None) {
-				pipeline.features = std::addressof(features);
-				if (!features.ignoredGrassForms.empty()) {
-					pipeline.ignoredGrass = std::addressof(features.ignoredGrassForms);
-				}
-				if (!features.textureForms.empty()) {
-					textureMask.emplace(snapshot, a_worldFormID, features.textureForms);
-					pipeline.textureMask = std::addressof(*textureMask);
-					pipeline.textureWidth = features.textureWidth;
+			if (passes.size() > 1 || passes.front().suffixes.size() > 1) {
+				for (std::size_t i = 0; i < passes.size(); ++i) {
+					spdlog::info("seasons: pass {} of {}: {}", i + 1, passes.size(), DescribePass(passes[i]));
 				}
 			}
-			pipeline.progress = control.progress ? std::addressof(control.progress->cellsDone) : nullptr;
-			pipeline.stop = control.stop;
-			pipeline.writer = std::addressof(a_shared.writer);
-			pipeline.writeTally = tally;
-			SetStage(control, RunStage::Generating);
-			const auto stats = Pipeline::RunCellPipeline(pipeline);
-			LogWorldSummary(a_shared, rejection, stats, generationBegin);
-			return WorldResult{ .stats = stats, .tally = std::move(tally) };
+
+			WorldResult result;
+			result.tally = std::make_shared<Pipeline::WriteTally>();
+			std::optional<WorldRejection> plainRejection;
+			const Rejection::WorldIndex* posted = nullptr;
+			for (const auto& pass : passes) {
+				ThrowIfStopped(control);
+				SetStage(control, RunStage::Preparing);
+				auto settings = a_shared.placement;
+				settings.landTextureGrass = pass.landTextureGrass.empty() ? nullptr : std::addressof(pass.landTextureGrass);
+				const auto placement = PrepareWorldPlacement(snapshot, a_worldFormID, settings);
+				ThrowIfStopped(control);
+
+				const auto generationBegin = std::chrono::steady_clock::now();
+				std::optional<WorldRejection> seasonalRejection;
+				const WorldRejection* rejection = nullptr;
+				if (pass.baseObjects.empty()) {
+					if (!plainRejection) {
+						plainRejection.emplace(SetUpRejection(a_shared, a_worldFormID, options.rejectionFeatures));
+						posted = plainRejection->index.get();
+					}
+#if FASTERNGIO_HAS_GPU
+					if (plainRejection->gpu && posted != plainRejection->index.get()) {
+						plainRejection->gpu->PostWorld(plainRejection->index);
+						posted = plainRejection->index.get();
+					}
+#endif
+					rejection = std::addressof(*plainRejection);
+				} else {
+					auto features = options.rejectionFeatures;
+					features.baseSwaps = pass.baseObjects;
+					seasonalRejection.emplace(SetUpRejection(a_shared, a_worldFormID, features));
+					posted = seasonalRejection->index.get();
+					rejection = std::addressof(*seasonalRejection);
+				}
+
+				Pipeline::CellPipelineDesc pipeline;
+				pipeline.snapshot = &snapshot;
+				pipeline.lands = lands;
+				pipeline.worldEditorID = worldEditorID;
+				pipeline.outputDirectory = options.outputDirectory;
+				pipeline.fileSuffixes = pass.suffixes;
+				pipeline.placement = placement.settings;
+				pipeline.overwrite = options.overwrite;
+				pipeline.shapesByGrass = &a_shared.shapes.byGrass;
+				pipeline.backend = rejection->backend;
+				pipeline.world = rejection->index.get();
+				pipeline.cpuBvh = rejection->cpuBvh.get();
+				pipeline.gpu = rejection->gpu;
+				pipeline.validateCpu = options.validateCpu;
+				const auto& features = options.rejectionFeatures;
+				std::optional<Grass::LandTextureMask> textureMask;
+				if (rejection->backend != RejectionBackend::None) {
+					pipeline.features = std::addressof(features);
+					if (!features.ignoredGrassForms.empty()) {
+						pipeline.ignoredGrass = std::addressof(features.ignoredGrassForms);
+					}
+					if (!features.textureForms.empty()) {
+						textureMask.emplace(snapshot, a_worldFormID, features.textureForms);
+						pipeline.textureMask = std::addressof(*textureMask);
+						pipeline.textureWidth = features.textureWidth;
+					}
+				}
+				pipeline.progress = control.progress ? std::addressof(control.progress->cellsDone) : nullptr;
+				pipeline.stop = control.stop;
+				pipeline.writer = std::addressof(a_shared.writer);
+				pipeline.writeTally = result.tally;
+				SetStage(control, RunStage::Generating);
+				const auto stats = Pipeline::RunCellPipeline(pipeline);
+				LogWorldSummary(a_shared, *rejection, stats, generationBegin);
+				Accumulate(result.stats, stats);
+				if (stats.cellsCancelled != 0) {
+					break;
+				}
+			}
+			return result;
 		}
 
 		// The worldspaces a run generates, in order.
@@ -317,6 +389,7 @@ namespace FasterNGIO::App
 		auto options = a_requested;
 		const auto ngio = LoadNgioSettingsFor(options);
 		ApplyNgioSettings(ngio, options);
+		const auto seasonsSettings = LoadSeasonsSettingsFor(options);
 		try {
 			SetStage(a_control, RunStage::LoadingPlugins);
 			std::optional<LoadedPlugins> loaded;
@@ -329,6 +402,18 @@ namespace FasterNGIO::App
 				options.rejectionFeatures = ResolveNgioFeatures(ngio, plugins.loadOrder);
 				options.rejectionFeatures.renderGeometry = options.renderGeometry;
 				LogRejectionFeatures(options.rejectionFeatures);
+			}
+			const auto seasons = ResolveSeasons(seasonsSettings, plugins.snapshot, plugins.loadOrder);
+			if (seasonsSettings.enabled) {
+				(void)CompareAutomaticWinterSwaps(seasonsSettings, seasons, plugins.snapshot, plugins.loadOrder);
+			}
+			if (!options.dumpSeasonSwapsPath.empty()) {
+				if (!seasonsSettings.enabled) {
+					throw std::invalid_argument("--dump-season-swaps: Seasons of Skyrim is not installed or not enabled (try --seasons on)");
+				}
+				DumpSeasonSwaps(seasons, plugins.snapshot, plugins.loadOrder, options.dumpSeasonSwapsPath);
+				SetStage(a_control, RunStage::Finished);
+				return result;
 			}
 			if (options.RunsDiagnostic()) {
 				result.exitCode = RunDiagnostic(options, plugins);
@@ -348,6 +433,7 @@ namespace FasterNGIO::App
 				.shapes = shapes,
 				.begin = begin,
 				.writer = *writer,
+				.seasons = seasons,
 			};
 			if (a_control.progress) {
 				a_control.progress->worldCount.store(static_cast<std::uint32_t>(worlds.size()), std::memory_order_relaxed);

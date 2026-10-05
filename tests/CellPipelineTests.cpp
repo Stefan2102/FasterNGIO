@@ -69,6 +69,26 @@ TEST(CellPipeline, WritesEveryCellInline)
 	EXPECT_EQ(again.cellsWritten, 0u);
 }
 
+TEST(CellPipeline, WritesEachCellUnderEveryName)
+{
+	EmptyWorld world;
+	auto desc = world.Desc();
+	desc.fileSuffixes = { "", "SPR", "SUM" };
+	const auto stats = Pipeline::RunCellPipeline(desc);
+	EXPECT_EQ(stats.cellsWritten, 9u);
+	for (const auto* name : { "Testx0000y-001.cgid", "Testx0000y-001.SPR.cgid", "Testx0002y-001.SUM.cgid" }) {
+		EXPECT_EQ(Tests::ReadAll(world.output.Path() / name), (std::vector<std::uint8_t>{ 0, 0, 0, 0 })) << name;
+	}
+
+	// A cell is skipped only when every name exists.
+	std::filesystem::remove(world.output.Path() / "Testx0001y-001.SUM.cgid");
+	desc.fileSuffixes = { "", "SPR", "SUM", "AUT" };
+	const auto again = Pipeline::RunCellPipeline(desc);
+	EXPECT_EQ(again.cellsSkipped, 0u);
+	desc.fileSuffixes = { "", "SPR" };
+	EXPECT_EQ(Pipeline::RunCellPipeline(desc).cellsSkipped, 3u);
+}
+
 TEST(CellPipeline, HandsFilesToTheWriter)
 {
 	EmptyWorld world;

@@ -139,6 +139,9 @@ namespace FasterNGIO::App
 		spdlog::info("collision: {} model(s), {} with rejecting collision, {} missing ({:.2f}s); {} of {} reference(s) instanced{}", stats.models,
 			stats.modelsWithCollision, stats.modelsMissing, stats.extractSeconds, stats.referencesWithCollision, stats.references,
 			stats.referencesIgnored ? std::format(", {} ignored (Ray-cast-ignore-forms)", stats.referencesIgnored) : std::string{});
+		if (stats.referencesSwapped != 0) {
+			spdlog::info("collision: {} reference(s) use their season's replacement base object", stats.referencesSwapped);
+		}
 		if (a_features.renderGeometry) {
 			spdlog::info("collision: {} of {} model(s) reject by their render geometry (experimental)", stats.modelsWithRenderGeometry,
 				stats.modelsWithCollision);

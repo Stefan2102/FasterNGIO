@@ -10,6 +10,8 @@ add_library(FasterNGIOApp STATIC
 	NgioConfig.h
 	Options.cpp
 	Options.h
+	SeasonsConfig.cpp
+	SeasonsConfig.h
 	WorldSetup.cpp
 	WorldSetup.h
 )

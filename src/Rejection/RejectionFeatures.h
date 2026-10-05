@@ -43,5 +43,8 @@ namespace FasterNGIO::Rejection
 		// Experimental (not an NGIO setting): objects with rejecting collision reject by their render
 		// geometry instead (Collision::ExtractionOptions::renderGeometry).
 		bool renderGeometry{ false };
+		// Seasons of Skyrim: a reference's base object -> the one placed instead this season. The
+		// replacement's model, and its NGIO roles, are what rejection sees.
+		std::unordered_map<GameData::FormID, GameData::FormID, GameData::FormIDHash> baseSwaps;
 	};
 }

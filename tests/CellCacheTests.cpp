@@ -51,4 +51,7 @@ TEST(FinalizeCell, RejectionDropsBladesAndShrinksBounds)
 TEST(FinalizeCell, CacheFileNameMatchesNgio)
 {
 	EXPECT_EQ(Grass::MakeNgioCacheFileName("Tamriel", -1, 12), "Tamrielx-001y0012.cgid");
+	// Grass Cache Helper NG's seasonal name.
+	EXPECT_EQ(Grass::MakeNgioCacheFileName("Tamriel", -1, 12, "WIN"), "Tamrielx-001y0012.WIN.cgid");
+	EXPECT_EQ(Grass::MakeNgioCacheFileName("Tamriel", -1, 12, ""), "Tamrielx-001y0012.cgid");
 }

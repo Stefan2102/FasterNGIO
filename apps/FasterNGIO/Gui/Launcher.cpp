@@ -6,6 +6,7 @@
 #include "Gui/LogSink.h"
 #include "Gui/Window.h"
 #include "NgioConfig.h"
+#include "SeasonsConfig.h"
 #include "Platform/FileSystem.h"
 #include "Platform/GameInstall.h"
 #include "Platform/ModOrganizer.h"
@@ -221,6 +222,16 @@ namespace FasterNGIO::Gui
 				_pluginsFound = PluginsTxtFound();
 				_enabledPlugins = _pluginsFound ? CountEnabledPlugins(PluginsTxt()) : 0;
 				DescribeNgioSettings();
+				DescribeSeasonsSettings();
+			}
+
+			void DescribeSeasonsSettings()
+			{
+				if (!_install) {
+					_seasonsSummary.clear();
+					return;
+				}
+				_seasonsSummary = App::DescribeSeasons(App::ReadSeasonsSettings(_install->data, _inputs.seasons));
 			}
 
 			// What NGIO's own settings (GrassControl.ini in the game's Data folder, which Mod Organizer 2
@@ -228,6 +239,8 @@ namespace FasterNGIO::Gui
 			void DescribeNgioSettings()
 			{
 				const auto settings = App::LoadNgioSettings(App::DefaultNgioConfigPath(_install->data), _install->data);
+				_ngioSkipWorlds = settings.skipWorldspaces;
+				_ngioOnlyWorlds = settings.onlyWorldspaces;
 				if (!settings.Present()) {
 					_ngioSummary = "NGIO settings: none found (no SKSE/Plugins/GrassControl.ini in Data), so NGIO's defaults are not applied.";
 					return;
@@ -290,19 +303,39 @@ namespace FasterNGIO::Gui
 
 			// --- Worldspace selection -----------------------------------------------------------
 
-			[[nodiscard]] bool IsWorldSelected(std::uint32_t a_formID) const
+			// NGIO's Skip-/Only-pregenerate-world-spaces leave this worldspace out of "all", as the run
+			// does (App::Run's world selection).
+			[[nodiscard]] bool SkippedByNgio(const App::WorldSummary& a_world) const
 			{
-				return _inputs.allWorlds || std::ranges::find(_inputs.worlds, a_formID) != _inputs.worlds.end();
+				const auto listed = [&](const std::vector<std::string>& a_list) {
+					return !a_world.editorID.empty() && std::ranges::any_of(a_list, [&](const std::string& a_name) { return Platform::IEquals(a_name, a_world.editorID); });
+				};
+				return _ngioOnlyWorlds.empty() ? listed(_ngioSkipWorlds) : !listed(_ngioOnlyWorlds);
+			}
+
+			[[nodiscard]] bool IsWorldSelected(const App::WorldSummary& a_world) const
+			{
+				if (_inputs.allWorlds) {
+					return !SkippedByNgio(a_world);
+				}
+				return std::ranges::find(_inputs.worlds, a_world.formID.value) != _inputs.worlds.end();
+			}
+
+			[[nodiscard]] std::size_t NgioSkippedCount(const Scan& a_scan) const
+			{
+				return static_cast<std::size_t>(std::ranges::count_if(a_scan.worlds, [&](const App::WorldSummary& a_world) { return SkippedByNgio(a_world); }));
 			}
 
 			void SetWorldSelected(const Scan& a_scan, std::uint32_t a_formID, bool a_selected)
 			{
 				if (_inputs.allWorlds) {
-					// Leaving "all": every listed worldspace but this one.
+					// Leaving "all": every worldspace it covered, changed by this one.
 					_inputs.allWorlds = false;
 					_inputs.worlds.clear();
 					for (const auto& world : a_scan.worlds) {
-						_inputs.worlds.push_back(world.formID.value);
+						if (!SkippedByNgio(world)) {
+							_inputs.worlds.push_back(world.formID.value);
+						}
 					}
 				}
 				std::erase(_inputs.worlds, a_formID);
@@ -321,7 +354,7 @@ namespace FasterNGIO::Gui
 				}
 				if (const auto* scan = FinishedScan()) {
 					for (const auto& world : scan->worlds) {
-						if (IsWorldSelected(world.formID.value)) {
+						if (IsWorldSelected(world)) {
 							worlds.push_back(world.formID);
 						}
 					}
@@ -339,6 +372,11 @@ namespace FasterNGIO::Gui
 			[[nodiscard]] std::string WorldsPreview() const
 			{
 				if (_inputs.allWorlds) {
+					if (const auto* scan = FinishedScan()) {
+						if (const auto skipped = NgioSkippedCount(*scan); skipped != 0) {
+							return std::format("All worldspaces ({} skipped by the NGIO settings)", skipped);
+						}
+					}
 					return "All worldspaces";
 				}
 				const auto worlds = SelectedWorlds();
@@ -375,6 +413,7 @@ namespace FasterNGIO::Gui
 				options.rejectionChosen = true;
 				options.overwrite = _inputs.overwrite;
 				options.renderGeometry = _inputs.renderGeometry;
+				options.seasons = _inputs.seasons;
 				options.gameIniDirectory = IniFolder();
 
 				std::shared_ptr<const App::LoadedPlugins> preloaded;
@@ -552,15 +591,16 @@ namespace FasterNGIO::Gui
 					// Checkboxes, which leave the list open for the next one. "All" checks every box;
 					// unchecking one of them then leaves the rest.
 					bool all = _inputs.allWorlds;
-					if (ImGui::Checkbox("All worldspaces", &all)) {
+					if (ImGui::Checkbox(scan && NgioSkippedCount(*scan) != 0 ? "All worldspaces, except those GrassControl.ini skips" : "All worldspaces", &all)) {
 						_inputs.allWorlds = all;
 						_inputs.worlds.clear();
 					}
 					if (scan) {
 						ImGui::Separator();
 						for (const auto& world : scan->worlds) {
-							const auto label = std::format("{}  ({} cells)##{:08X}", world.editorID, world.cells, world.formID.value);
-							bool selected = IsWorldSelected(world.formID.value);
+							const auto label = std::format("{}  ({} cells){}##{:08X}", world.editorID, world.cells,
+								SkippedByNgio(world) ? ", skipped by GrassControl.ini unless ticked" : "", world.formID.value);
+							bool selected = IsWorldSelected(world);
 							if (ImGui::Checkbox(label.c_str(), &selected)) {
 								SetWorldSelected(*scan, world.formID.value, selected);
 							}
@@ -598,12 +638,12 @@ namespace FasterNGIO::Gui
 				};
 				static constexpr Choice kChoices[] = {
 #if FASTERNGIO_HAS_GPU
-					{ App::RejectChoice::Auto, "Remove: graphics card if supported, else processor" },
-					{ App::RejectChoice::Gpu, "Remove: graphics card only" },
+					{ App::RejectChoice::Auto, "Remove: graphics card if supported, else CPU" },
+					//{ App::RejectChoice::Gpu, "Remove: graphics card only" },
 #else
-					{ App::RejectChoice::Auto, "Remove (processor)" },
+					{ App::RejectChoice::Auto, "Remove (CPU)" },
 #endif
-					{ App::RejectChoice::Cpu, "Remove: processor only" },
+					{ App::RejectChoice::Cpu, "Remove: CPU only" },
 					{ App::RejectChoice::None, "Keep (no rejection, like vanilla)" },
 				};
 				const char* current = kChoices[0].label;
@@ -629,9 +669,44 @@ namespace FasterNGIO::Gui
 						"their (usually coarser) collision is. Objects without collision still keep grass.");
 				}
 
+				ImGui::AlignTextToFramePadding();
+				ImGui::TextUnformatted("Seasons of Skyrim");
+				ImGui::SameLine(labelWidth);
+				ImGui::SetNextItemWidth(fieldWidth);
+				{
+					static constexpr std::pair<App::SeasonsChoice, const char*> kSeasonChoices[] = {
+						{ App::SeasonsChoice::Auto, "Seasonal caches when Seasons of Skyrim is installed" },
+						{ App::SeasonsChoice::On, "Always write seasonal caches" },
+						{ App::SeasonsChoice::Off, "Plain caches only" },
+					};
+					const char* currentSeasons = kSeasonChoices[0].second;
+					for (const auto& [value, label] : kSeasonChoices) {
+						if (value == _inputs.seasons) {
+							currentSeasons = label;
+						}
+					}
+					if (ImGui::BeginCombo("##seasons", currentSeasons)) {
+						for (const auto& [value, label] : kSeasonChoices) {
+							if (ImGui::Selectable(label, value == _inputs.seasons) && value != _inputs.seasons) {
+								_inputs.seasons = value;
+								DescribeSeasonsSettings();
+							}
+						}
+						ImGui::EndCombo();
+					}
+					if (ImGui::IsItemHovered()) {
+						ImGui::SetTooltip(
+							"Grass Cache Helper NG loads <cell>.WIN.cgid etc. for the current season. Each season's grass\n"
+							"and object swaps are applied as Seasons of Skyrim applies them in-game.");
+					}
+				}
+
 				ImGui::Checkbox("Rebuild cache files that already exist", &_inputs.overwrite);
 				if (_install && !_ngioSummary.empty()) {
 					ImGui::TextDisabled("%s", _ngioSummary.c_str());
+				}
+				if (_install && !_seasonsSummary.empty()) {
+					ImGui::TextDisabled("%s", _seasonsSummary.c_str());
 				}
 
 				ImGui::SetNextItemOpen(_showAdvanced, ImGuiCond_Once);
@@ -782,6 +857,10 @@ namespace FasterNGIO::Gui
 			Clock::time_point _lastPluginsCheck{};
 			std::size_t _enabledPlugins{ 0 };
 			std::string _ngioSummary;
+			// GrassControl.ini's Skip-/Only-pregenerate-world-spaces.
+			std::vector<std::string> _ngioSkipWorlds;
+			std::vector<std::string> _ngioOnlyWorlds;
+			std::string _seasonsSummary;
 
 			std::unique_ptr<BackgroundTask<Scan>> _scan;
 			ScanKey _scanKey;

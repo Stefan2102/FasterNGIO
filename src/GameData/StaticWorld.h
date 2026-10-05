@@ -24,6 +24,9 @@ namespace FasterNGIO::GameData
 		std::vector<BaseObjectInfo> baseObjects;
 		std::vector<LandTextureInfo> landTextures;
 		std::vector<GrassInfo> grasses;
+		std::vector<MaterialTypeInfo> materialTypes;
+		std::vector<TextureSetInfo> textureSets;
+		std::vector<MaterialObjectInfo> materialObjects;
 		std::vector<WorldInfo> worlds;
 		std::vector<CellInfo> cells;
 		std::vector<LandInfo> lands;
@@ -42,6 +45,15 @@ namespace FasterNGIO::GameData
 		std::unordered_map<FormID, BaseObjectInfo, FormIDHash> baseObjectsByFormID;
 		std::unordered_map<FormID, LandTextureInfo, FormIDHash> landTexturesByFormID;
 		std::unordered_map<FormID, GrassInfo, FormIDHash> grassesByFormID;
+		std::unordered_map<FormID, MaterialTypeInfo, FormIDHash> materialTypesByFormID;
+		std::unordered_map<FormID, TextureSetInfo, FormIDHash> textureSetsByFormID;
+		std::unordered_map<FormID, MaterialObjectInfo, FormIDHash> materialObjectsByFormID;
+		// For base objects, land textures, material types, texture sets and material objects: the
+		// order the engine creates the forms in (the first plugin defining each, in load order, then
+		// record order) and the editor ID of that first definition, as powerofthree's Tweaks keeps
+		// it. Seasons of Skyrim's automatic winter swaps depend on both.
+		std::unordered_map<FormID, std::uint32_t, FormIDHash> creationOrder;
+		std::unordered_map<FormID, std::string, FormIDHash> firstEditorIDs;
 		std::unordered_map<FormID, WorldInfo, FormIDHash> worldsByFormID;
 		std::unordered_map<FormID, CellInfo, FormIDHash> cellsByFormID;
 		// LAND whose cell is an exterior cell with grid coordinates.

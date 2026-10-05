@@ -26,6 +26,7 @@ namespace FasterNGIO::Gui
 		bool overwrite{ false };
 		// Experimental: GenerateOptions::renderGeometry.
 		bool renderGeometry{ false };
+		App::SeasonsChoice seasons{ App::SeasonsChoice::Auto };
 
 		// Defaults for anything missing or unreadable.
 		[[nodiscard]] static LauncherSettings Load(const std::filesystem::path& a_path);

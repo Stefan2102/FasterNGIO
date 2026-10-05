@@ -84,6 +84,14 @@ namespace FasterNGIO::Grass
 		return std::format("{}x{:04}y{:04}.cgid", a_worldEditorID, a_cellX, a_cellY);
 	}
 
+	std::string MakeNgioCacheFileName(std::string_view a_worldEditorID, std::int32_t a_cellX, std::int32_t a_cellY, std::string_view a_season)
+	{
+		if (a_season.empty()) {
+			return MakeNgioCacheFileName(a_worldEditorID, a_cellX, a_cellY);
+		}
+		return std::format("{}x{:04}y{:04}.{}.cgid", a_worldEditorID, a_cellX, a_cellY, a_season);
+	}
+
 	std::string ResolveWorldEditorID(const GameData::StaticWorldSnapshot& a_snapshot, GameData::FormID a_worldFormID)
 	{
 		const auto worldIt = a_snapshot.worldsByFormID.find(a_worldFormID);

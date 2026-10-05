@@ -95,6 +95,25 @@ namespace FasterNGIO::Grass::Internal
 	[[nodiscard]] bool PassesWaterFilter(const GameData::GrassInfo& a_grass, float a_height, float a_waterHeight);
 	[[nodiscard]] bool PassesSlopeFilter(const GameData::GrassInfo& a_grass, const TerrainSample& a_sample);
 
+	// The land texture whose grass list a_texture's terrain grows: a_texture itself, or the one Seasons
+	// of Skyrim swaps in (its GetGrassList hook). Null when a_texture is unknown.
+	[[nodiscard]] inline const GameData::LandTextureInfo* GrassListTexture(const GameData::StaticWorldSnapshot& a_snapshot, const PlacementSettings& a_settings,
+		GameData::FormID a_texture)
+	{
+		const auto ltexIt = a_snapshot.landTexturesByFormID.find(a_texture);
+		if (ltexIt == a_snapshot.landTexturesByFormID.end()) {
+			return nullptr;
+		}
+		if (a_settings.landTextureGrass) {
+			if (const auto swap = a_settings.landTextureGrass->find(a_texture); swap != a_settings.landTextureGrass->end()) {
+				if (const auto swapIt = a_snapshot.landTexturesByFormID.find(swap->second); swapIt != a_snapshot.landTexturesByFormID.end()) {
+					return std::addressof(swapIt->second);
+				}
+			}
+		}
+		return std::addressof(ltexIt->second);
+	}
+
 	// The grass types the engine takes from a land texture, in GNAM order: only GNAMs that resolve
 	// to a GRAS count, and the list ends once the count exceeds iMaxGrassTypesPerTexure (the
 	// engine tests `count > max` before taking each one), so the default of 2 yields 3 types.

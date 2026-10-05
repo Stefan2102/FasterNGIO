@@ -101,6 +101,8 @@ namespace FasterNGIO::Rejection
 		std::uint64_t referencesWithCollision{ 0 };
 		// References of Ray-cast-ignore-forms base forms, left out.
 		std::uint64_t referencesIgnored{ 0 };
+		// References whose base object a season swaps (RejectionFeatures::baseSwaps).
+		std::uint64_t referencesSwapped{ 0 };
 		// Instances that are grass cliffs, or have ignored render shapes (NGIO).
 		std::uint64_t cliffInstances{ 0 };
 		std::uint64_t partIgnoredInstances{ 0 };

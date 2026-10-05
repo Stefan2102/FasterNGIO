@@ -28,6 +28,9 @@ namespace FasterNGIO::Gui
 #endif
 		settings.overwrite = file.Get("overwrite") == "1";
 		settings.renderGeometry = file.Get("render_geometry") == "1";
+		if (const auto seasons = file.Get("seasons")) {
+			settings.seasons = *seasons == "on" ? App::SeasonsChoice::On : *seasons == "off" ? App::SeasonsChoice::Off : App::SeasonsChoice::Auto;
+		}
 		// "all", or comma-separated hex form IDs (one, from before the selector took several).
 		if (const auto worlds = file.Get("world"); worlds && *worlds != "all") {
 			settings.allWorlds = false;
@@ -53,6 +56,7 @@ namespace FasterNGIO::Gui
 		file.Set("rejection", App::RejectChoiceName(rejection));
 		file.Set("overwrite", overwrite ? "1" : "0");
 		file.Set("render_geometry", renderGeometry ? "1" : "0");
+		file.Set("seasons", seasons == App::SeasonsChoice::On ? "on" : seasons == App::SeasonsChoice::Off ? "off" : "auto");
 		std::string worldList;
 		for (const auto world : worlds) {
 			worldList += std::format("{}{:08X}", worldList.empty() ? "" : ",", world);

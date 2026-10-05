@@ -40,7 +40,8 @@ namespace FasterNGIO::GameData
 		[[nodiscard]] bool IsParsedSignature(FourCC a_signature)
 		{
 			return a_signature == kSigWrld || a_signature == kSigCell || a_signature == kSigLand || a_signature == kSigRefr || a_signature == kSigAchr ||
-			       a_signature == kSigLtex || a_signature == kSigGras || IsBaseObjectSignature(a_signature);
+			       a_signature == kSigLtex || a_signature == kSigGras || a_signature == kSigMatt || a_signature == kSigTxst || a_signature == kSigMato ||
+			       IsBaseObjectSignature(a_signature);
 		}
 
 		void ParseRecord(std::span<const std::uint8_t> a_bytes, std::size_t a_offset, ParserContext& a_context)
@@ -98,6 +99,12 @@ namespace FasterNGIO::GameData
 				shard.landTextures.push_back(ExtractLandTexture(record, data));
 			} else if (header.signature == kSigGras) {
 				shard.grasses.push_back(ExtractGrass(record, data));
+			} else if (header.signature == kSigMatt) {
+				shard.materialTypes.push_back(ExtractMaterialType(record, data));
+			} else if (header.signature == kSigTxst) {
+				shard.textureSets.push_back(ExtractTextureSet(record, data));
+			} else if (header.signature == kSigMato) {
+				shard.materialObjects.push_back(ExtractMaterialObject(record, data));
 			} else {
 				shard.baseObjects.push_back(ExtractBaseObject(record, data));
 			}

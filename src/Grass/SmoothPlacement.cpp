@@ -348,8 +348,8 @@ namespace FasterNGIO::Grass
 				return it->second;
 			}
 			std::vector<std::size_t> indices;
-			if (const auto ltexIt = a_snapshot.landTexturesByFormID.find(a_texture); ltexIt != a_snapshot.landTexturesByFormID.end()) {
-				ForEachTextureGrass(a_snapshot, ltexIt->second, a_settings.maxGrassTypesPerTexture, [&](const GameData::GrassInfo& a_grass) {
+			if (const auto* texture = GrassListTexture(a_snapshot, a_settings, a_texture)) {
+				ForEachTextureGrass(a_snapshot, *texture, a_settings.maxGrassTypesPerTexture, [&](const GameData::GrassInfo& a_grass) {
 					const auto [gridIt, inserted] = gridByGrass.try_emplace(a_grass.formID, grids.size());
 					if (inserted) {
 						grids.push_back(SmoothWeightField::Grid{ .grass = std::addressof(a_grass) });

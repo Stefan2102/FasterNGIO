@@ -86,6 +86,30 @@ TEST(VanillaPlacement, TakesOneMoreGrassTypePerTextureThanTheIniMaximum)
 	EXPECT_EQ(cell.groups[2].grass->formID.value, 0x103u);
 }
 
+TEST(VanillaPlacement, GrowsTheSeasonsSwappedGrassList)
+{
+	World world;
+	world.SetBase(kBareTexture);
+	Grass::PlacementSettings settings;
+	EXPECT_TRUE(Grass::GenerateCellCandidates(world.snapshot, world.land, settings).blades.empty());
+
+	// Seasons of Skyrim's GetGrassList: the bare texture takes the grassy one's grass list, and the
+	// grassy one takes the bare one's.
+	const std::unordered_map<FormID, FormID, GameData::FormIDHash> swap{ { kBareTexture, kGrassTexture }, { kGrassTexture, kBareTexture } };
+	settings.landTextureGrass = &swap;
+	const auto swapped = Grass::GenerateCellCandidates(world.snapshot, world.land, settings);
+	world.SetBase(kGrassTexture);
+	settings.landTextureGrass = nullptr;
+	const auto grassy = Grass::GenerateCellCandidates(world.snapshot, world.land, settings);
+	ASSERT_FALSE(grassy.blades.empty());
+	ASSERT_EQ(swapped.blades.size(), grassy.blades.size());
+	for (std::size_t i = 0; i < grassy.blades.size(); ++i) {
+		ASSERT_EQ(swapped.blades[i].words, grassy.blades[i].words);
+	}
+	settings.landTextureGrass = &swap;
+	EXPECT_TRUE(Grass::GenerateCellCandidates(world.snapshot, world.land, settings).blades.empty());
+}
+
 TEST(SmoothPlacement, IsDeterministic)
 {
 	World world;

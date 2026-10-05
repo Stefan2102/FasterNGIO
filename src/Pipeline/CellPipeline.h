@@ -53,6 +53,9 @@ namespace FasterNGIO::Pipeline
 		std::vector<const GameData::LandInfo*> lands;
 		std::string worldEditorID;
 		std::filesystem::path outputDirectory;
+		// Each cell's file is written under every one of these names: "" for the plain cache, a
+		// season's suffix ("WIN") for Grass Cache Helper NG's. A cell is skipped only when all exist.
+		std::vector<std::string> fileSuffixes{ std::string{} };
 		Grass::PlacementSettings placement;
 		bool overwrite{ false };
 		const std::unordered_map<GameData::FormID, Rejection::QueryShape, GameData::FormIDHash>* shapesByGrass{ nullptr };

@@ -92,6 +92,21 @@ namespace FasterNGIO::GameData
 			}
 		}
 
+		// The first definition of each form of a_records: its creation order and editor ID.
+		template <class Info>
+		void RecordFirstDefinitions(StaticWorldSnapshot& a_snapshot, const std::vector<Info>& a_records)
+		{
+			for (const auto& record : a_records) {
+				if (record.formID.IsEmpty()) {
+					continue;
+				}
+				const auto order = static_cast<std::uint32_t>(a_snapshot.creationOrder.size());
+				if (a_snapshot.creationOrder.try_emplace(record.formID, order).second && !record.editorID.empty()) {
+					a_snapshot.firstEditorIDs.emplace(record.formID, record.editorID);
+				}
+			}
+		}
+
 		void MergeShards(StaticWorldSnapshot& a_snapshot, std::span<const StaticPluginShard> a_shards)
 		{
 			std::size_t bases = 0;
@@ -113,10 +128,20 @@ namespace FasterNGIO::GameData
 			a_snapshot.cellsByFormID.reserve(cells);
 
 			for (const auto& shard : a_shards) {
+				// Forms are created in file order; a later plugin's override keeps the original's place.
+				RecordFirstDefinitions(a_snapshot, shard.landTextures);
+				RecordFirstDefinitions(a_snapshot, shard.materialTypes);
+				RecordFirstDefinitions(a_snapshot, shard.textureSets);
+				RecordFirstDefinitions(a_snapshot, shard.materialObjects);
+				RecordFirstDefinitions(a_snapshot, shard.baseObjects);
+
 				MergeRecords(a_snapshot.worldsByFormID, shard.worlds);
 				MergeRecords(a_snapshot.baseObjectsByFormID, shard.baseObjects);
 				MergeRecords(a_snapshot.landTexturesByFormID, shard.landTextures);
 				MergeRecords(a_snapshot.grassesByFormID, shard.grasses);
+				MergeRecords(a_snapshot.materialTypesByFormID, shard.materialTypes);
+				MergeRecords(a_snapshot.textureSetsByFormID, shard.textureSets);
+				MergeRecords(a_snapshot.materialObjectsByFormID, shard.materialObjects);
 				MergeRecords(a_snapshot.cellsByFormID, shard.cells);
 				for (const auto& suppressor : shard.suppressors) {
 					if (IsBaseObjectSignature(suppressor.signature)) {
@@ -125,6 +150,12 @@ namespace FasterNGIO::GameData
 						a_snapshot.landTexturesByFormID.erase(suppressor.formID);
 					} else if (suppressor.signature == kSigGras) {
 						a_snapshot.grassesByFormID.erase(suppressor.formID);
+					} else if (suppressor.signature == kSigMatt) {
+						a_snapshot.materialTypesByFormID.erase(suppressor.formID);
+					} else if (suppressor.signature == kSigTxst) {
+						a_snapshot.textureSetsByFormID.erase(suppressor.formID);
+					} else if (suppressor.signature == kSigMato) {
+						a_snapshot.materialObjectsByFormID.erase(suppressor.formID);
 					} else if (suppressor.signature == kSigWrld) {
 						a_snapshot.worldsByFormID.erase(suppressor.formID);
 					} else if (suppressor.signature == kSigCell) {

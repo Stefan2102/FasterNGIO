@@ -66,6 +66,7 @@ namespace FasterNGIO::Rejection
 		struct PendingReference
 		{
 			const GameData::PlacementInfo* placement{ nullptr };
+			GameData::FormID baseFormID{};
 			std::uint32_t model{ 0 };
 			InstanceRole role{ kRoleOrdinary };
 			bool steep{ false };
@@ -93,11 +94,16 @@ namespace FasterNGIO::Rejection
 				continue;
 			}
 			for (const auto& placement : placements) {
-				const auto baseIt = a_snapshot.baseObjectsByFormID.find(placement.baseFormID);
+				auto baseFormID = placement.baseFormID;
+				if (const auto swap = a_features.baseSwaps.find(baseFormID); swap != a_features.baseSwaps.end()) {
+					baseFormID = swap->second;
+					++_stats.referencesSwapped;
+				}
+				const auto baseIt = a_snapshot.baseObjectsByFormID.find(baseFormID);
 				if (baseIt == a_snapshot.baseObjectsByFormID.end() || baseIt->second.modelPath.empty()) {
 					continue;
 				}
-				if (a_features.ignoredBaseForms.contains(placement.baseFormID)) {
+				if (a_features.ignoredBaseForms.contains(baseFormID)) {
 					++_stats.referencesIgnored;
 					continue;
 				}
@@ -110,9 +116,10 @@ namespace FasterNGIO::Rejection
 				}
 				bool steep = false;
 				bool shapes = false;
-				const auto role = roleOf(placement.baseFormID, steep, shapes);
+				const auto role = roleOf(baseFormID, steep, shapes);
 				needsShapes[it->second] = (needsShapes[it->second] != 0 || shapes) ? 1 : 0;
-				references.push_back(PendingReference{ .placement = std::addressof(placement), .model = it->second, .role = role, .steep = steep });
+				references.push_back(
+					PendingReference{ .placement = std::addressof(placement), .baseFormID = baseFormID, .model = it->second, .role = role, .steep = steep });
 			}
 		}
 		_stats.models = _models.size();
@@ -147,7 +154,7 @@ namespace FasterNGIO::Rejection
 					.model = reference.model,
 					.worldFromModel = Similarity::FromPlacement(placement.position, placement.rotation, placement.scale),
 					.referenceFormID = placement.formID,
-					.baseFormID = placement.baseFormID,
+					.baseFormID = reference.baseFormID,
 					.role = reference.role,
 					.steep = reference.steep,
 				},

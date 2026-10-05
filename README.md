@@ -1,10 +1,21 @@
 # FasterNGIO
 
 Generates No Grass In Objects (NGIO)-compatible grass caches (`Data/Grass/*.cgid`) for Skyrim Special Edition offline, without launching the game.
-Grass placement reproduces the engine's; blades inside objects are found by ray tracing the world's
-Havok collision on the GPU (D3D12/DXR on Windows, Vulkan on Windows and Linux), or with a CPU BVH
+Grass placement reproduces the engine's; blades inside objects are found by ray tracing the game world on the GPU (D3D12/DXR on Windows, Vulkan on Windows and Linux), or with a CPU BVH
 when the GPU cannot.
 
+# Quickstart:
+**MO2**: Add the FasterNGIO executable to MO2's executables list, and launch it from there. Configure any settings you want (defaults are probably fine), and click generate.
+
+**Vortex**: Run the FasterNGIO executable manually. Point it at your mod folder, configure any settings you want, and click generate.
+
+**Linux users**: Download the native Linux version from Nexus (Or run the Windows version through Wine/Proton), and follow the instructions above.
+
+-----
+
+The generation should take less than a minute.
+
+# Details:
 ```
 FasterNGIO --data "<Skyrim>\Data" --out "<mod>\Grass" [--world 0x3C] [--plugins plugins.txt]
 ```
@@ -77,9 +88,38 @@ that only affect the game at runtime are ignored. The rest:
   Ensure-max-grass-types-setting, and the skip and only lists for pregenerated worldspaces (they
   apply to `--world all` and the window's "All worldspaces").
 
-NGIO itself never reads `Ray-cast-mode` (its reader stores the value in another setting), so the
+NGIO itself seems to not read `Ray-cast-mode`, so the
 capsule query is kept whatever the file says; `--ray-mode` changes it here. Command-line options
 override the file, and `--ngio-config <file|none>` picks another file or none.
+
+## Seasons of Skyrim
+
+With Seasons of Skyrim installed (`po3_SeasonsOfSkyrim.dll` in `Data\SKSE\Plugins`), each run also
+writes every season's caches, `<cell>.WIN.cgid`, `.SPR.cgid`, `.SUM.cgid` and `.AUT.cgid`, which
+Grass Cache Helper NG loads for the current season. There is nothing to rename and no need to
+generate four times in-game. Each season applies Seasons' own swaps, read as Seasons reads them:
+
+- **What is applied:**
+  - each land texture's seasonal grass list;
+  - for rejection, the seasonal replacement objects (statics, trees, activators, furniture, movable
+    statics, flora).
+- **Where the swaps come from:**
+  - the automatic winter swaps Seasons generates (MainFormSwap_WIN.ini);
+  - the `Data\Seasons\*_WIN|SPR|SUM|AUT.ini` files.
+- **Settings honoured** from `po3_SeasonsOfSkyrim.ini`:
+  - its worldspace lists;
+  - its per-season `Grass` and object switches;
+  - `Season Type = 0` means no seasonal caches;
+  - a season whose `Grass` isn't `true` gets none, since Grass Cache Helper NG then loads the plain
+    caches.
+- **Seasons without differences** in a worldspace get copies of the plain cache, since Grass Cache
+  Helper NG asks for the seasonal file everywhere.
+- **Editor IDs:** editor-ID entries and Seasons' editor-ID rules need powerofthree's Tweaks, as they
+  do in-game.
+
+`--seasons on|off` overrides the detection (the window has the same choice), and
+`--dump-season-swaps <file>` writes the resolved swaps for inspection. Expect about five times as
+many files.
 
 ## Without Mod Organizer 2
 

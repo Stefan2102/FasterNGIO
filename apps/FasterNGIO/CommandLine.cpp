@@ -113,6 +113,8 @@ namespace FasterNGIO::App
 			"  --reject <auto|gpu|cpu|none>  Rejection backend. auto (default) uses the GPU when it supports\n"
 			"                                ray tracing with bindless descriptor heaps, else the CPU BVH\n"
 			"  --gpu-api <d3d12|vulkan>      Ray-tracing API, default d3d12 on Windows, vulkan elsewhere\n"
+			"  --seasons <auto|on|off>       Seasons of Skyrim: also write each season's caches (<cell>.WIN.cgid etc.)\n"
+			"                                with its grass and object swaps; auto (default) when it is installed\n"
 			"  --render-geometry             Experimental: objects with collision reject by their render meshes\n"
 			"                                (visible, non-decal shapes) instead of their collision\n"
 			"  --validate-cpu                Also run the brute-force CPU reference and compare\n"
@@ -129,7 +131,8 @@ namespace FasterNGIO::App
 			"                                uint32) before rejection, for offline analysis; writes no caches\n"
 			"  --benchmark-rejection         Place every selected cell in memory, then time the CPU BVH (all threads\n"
 			"                                and one) and, when available, the GPU on the same queries; writes nothing\n"
-			"  --dump-collision <model> <obj> Write one model's grass-rejecting collision as OBJ\n",
+			"  --dump-collision <model> <obj> Write one model's grass-rejecting collision as OBJ\n"
+			"  --dump-season-swaps <file>    Write Seasons of Skyrim's resolved swaps (MainFormSwap_WIN.ini syntax)\n",
 			stdout);
 	}
 
@@ -225,6 +228,19 @@ namespace FasterNGIO::App
 				(void)value;
 				throw std::invalid_argument("this build has no GPU support");
 #endif
+			} else if (arg == "--seasons") {
+				const auto value = requireValue(arg);
+				if (value == "auto") {
+					options.seasons = SeasonsChoice::Auto;
+				} else if (value == "on") {
+					options.seasons = SeasonsChoice::On;
+				} else if (value == "off") {
+					options.seasons = SeasonsChoice::Off;
+				} else {
+					throw std::invalid_argument("expected --seasons auto, on or off");
+				}
+			} else if (arg == "--dump-season-swaps") {
+				options.dumpSeasonSwapsPath = requireValue(arg);
 			} else if (arg == "--render-geometry") {
 				options.renderGeometry = true;
 			} else if (arg == "--validate-cpu") {
@@ -287,9 +303,9 @@ namespace FasterNGIO::App
 		}
 
 		const int diagnostics = (options.collisionSurvey ? 1 : 0) + (options.benchmarkRejection ? 1 : 0) + (options.exportBladesPath.empty() ? 0 : 1) +
-		                        (options.dumpCollisionModel.empty() ? 0 : 1);
+		                        (options.dumpCollisionModel.empty() ? 0 : 1) + (options.dumpSeasonSwapsPath.empty() ? 0 : 1);
 		if (diagnostics > 1) {
-			throw std::invalid_argument("choose one of --collision-survey, --benchmark-rejection, --export-blades and --dump-collision");
+			throw std::invalid_argument("choose one of --collision-survey, --benchmark-rejection, --export-blades, --dump-collision and --dump-season-swaps");
 		}
 		if (options.singleCellX && options.radius) {
 			throw std::invalid_argument("choose either --cell or --radius");

@@ -18,6 +18,9 @@ namespace FasterNGIO::Grass
 
 	// "<EditorID>x<XXXX>y<YYYY>.cgid", as NGIO names a cell's cache.
 	[[nodiscard]] std::string MakeNgioCacheFileName(std::string_view a_worldEditorID, std::int32_t a_cellX, std::int32_t a_cellY);
+	// "<EditorID>x<XXXX>y<YYYY>.<SEASON>.cgid", Grass Cache Helper NG's name for a season's cache
+	// (a_season "WIN", "SPR", "SUM" or "AUT"); the plain name when a_season is empty.
+	[[nodiscard]] std::string MakeNgioCacheFileName(std::string_view a_worldEditorID, std::int32_t a_cellX, std::int32_t a_cellY, std::string_view a_season);
 
 	// The worldspace's editor ID, "Tamriel" for 0x3C without one, else its form ID in hex.
 	[[nodiscard]] std::string ResolveWorldEditorID(const GameData::StaticWorldSnapshot& a_snapshot, GameData::FormID a_worldFormID);

@@ -219,10 +219,20 @@ namespace FasterNGIO::Pipeline
 				return intent;
 			}
 
-			[[nodiscard]] std::filesystem::path CellPath(std::uint32_t a_cell) const
+			[[nodiscard]] std::filesystem::path CellPath(std::uint32_t a_cell, std::size_t a_name = 0) const
 			{
 				const auto& land = *_desc.lands[a_cell];
-				return _desc.outputDirectory / Grass::MakeNgioCacheFileName(_desc.worldEditorID, *land.cellX, *land.cellY);
+				return _desc.outputDirectory / Grass::MakeNgioCacheFileName(_desc.worldEditorID, *land.cellX, *land.cellY, _desc.fileSuffixes[a_name]);
+			}
+
+			[[nodiscard]] bool AllFilesExist(std::uint32_t a_cell) const
+			{
+				for (std::size_t name = 0; name < _desc.fileSuffixes.size(); ++name) {
+					if (!Grass::ExistingNgioCacheLooksValid(CellPath(a_cell, name))) {
+						return false;
+					}
+				}
+				return true;
 			}
 
 			[[nodiscard]] static BuildResult Ready(std::shared_ptr<CellWork> a_work, std::shared_ptr<const org::async::GpuSubmissionSet> a_gpu = {})
@@ -242,7 +252,7 @@ namespace FasterNGIO::Pipeline
 						work->cancelled = true;
 						return Ready(std::move(work));
 					}
-					if (!_desc.overwrite && Grass::ExistingNgioCacheLooksValid(CellPath(a_input.cell))) {
+					if (!_desc.overwrite && AllFilesExist(a_input.cell)) {
 						work->skip = true;
 						return Ready(std::move(work));
 					}
@@ -439,12 +449,15 @@ namespace FasterNGIO::Pipeline
 					_rejected.fetch_add(CountBits(work.rejected));
 					_blades.fetch_add(work.candidates.blades.size());
 					auto bytes = Grass::SerializeNgioCellCache(Grass::FinalizeCell(work.candidates, work.rejected));
-					if (_desc.writer) {
-						_desc.writer->Submit(CellPath(a_input.cell), std::move(bytes), _desc.writeTally);
-					} else {
-						Platform::WriteWholeFile(CellPath(a_input.cell), bytes);
+					const auto names = _desc.fileSuffixes.size();
+					for (std::size_t name = 0; name < names; ++name) {
+						if (_desc.writer) {
+							_desc.writer->Submit(CellPath(a_input.cell, name), name + 1 == names ? std::move(bytes) : bytes, _desc.writeTally);
+						} else {
+							Platform::WriteWholeFile(CellPath(a_input.cell, name), bytes);
+						}
 					}
-					_written.fetch_add(1);
+					_written.fetch_add(names);
 				} catch (const std::exception& e) {
 					spdlog::error("cell {}: {}", CellPath(a_input.cell).filename().string(), e.what());
 					_failed.fetch_add(1);

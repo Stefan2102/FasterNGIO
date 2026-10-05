@@ -30,8 +30,16 @@ namespace FasterNGIO::GameData
 	struct BaseObjectInfo
 	{
 		FormID formID{};
+		// The record type (STAT, TREE, ...).
+		FourCC signature{ 0 };
+		std::string editorID;
 		std::string modelPath;
 		ObjectBounds bounds;
+		// MODS: the texture set of each alternate texture of the model, in order (Seasons of
+		// Skyrim's snow tests read them).
+		std::vector<FormID> alternateTextureSets;
+		// STAT DNAM: the directional material object.
+		FormID materialObject{};
 	};
 
 	struct WorldInfo
@@ -55,8 +63,35 @@ namespace FasterNGIO::GameData
 	struct LandTextureInfo
 	{
 		FormID formID{};
+		std::string editorID;
+		// MNAM: the material type (MATT).
+		FormID materialType{};
 		// GNAM, in order.
 		std::vector<FormID> grassFormIDs;
+	};
+
+	// MATT: a material type and its name, from which the engine derives its material ID.
+	struct MaterialTypeInfo
+	{
+		FormID formID{};
+		std::string editorID;
+		// MNAM.
+		std::string name;
+	};
+
+	// TXST: only the diffuse texture path (TX00).
+	struct TextureSetInfo
+	{
+		FormID formID{};
+		std::string editorID;
+		std::string diffuse;
+	};
+
+	// MATO: only its editor ID.
+	struct MaterialObjectInfo
+	{
+		FormID formID{};
+		std::string editorID;
 	};
 
 	enum class GrassWaterState : std::uint32_t

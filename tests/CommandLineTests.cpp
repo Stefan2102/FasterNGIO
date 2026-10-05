@@ -130,3 +130,13 @@ TEST(CommandLine, ChoosesTheNgioSettings)
 	EXPECT_FALSE(Parse({ "--data", game.data, "--out", "out", "--grass-eval-size", "3" })->grassPatchSizeChosen);
 	EXPECT_TRUE(Parse({ "--data", game.data, "--out", "out", "--grass-patch-size", "300" })->grassPatchSizeChosen);
 }
+
+TEST(CommandLine, ChoosesSeasonalCaches)
+{
+	const Game game;
+	EXPECT_EQ(Parse({ "--data", game.data, "--out", "out" })->seasons, App::SeasonsChoice::Auto);
+	EXPECT_EQ(Parse({ "--data", game.data, "--out", "out", "--seasons", "on" })->seasons, App::SeasonsChoice::On);
+	EXPECT_EQ(Parse({ "--data", game.data, "--out", "out", "--seasons", "off" })->seasons, App::SeasonsChoice::Off);
+	EXPECT_THROW((void)Parse({ "--data", game.data, "--out", "out", "--seasons", "winter" }), std::invalid_argument);
+	EXPECT_EQ(Parse({ "--data", game.data, "--out", "out", "--dump-season-swaps", "s.ini" })->dumpSeasonSwapsPath, std::filesystem::path("s.ini"));
+}

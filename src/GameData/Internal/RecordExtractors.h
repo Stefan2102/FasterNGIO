@@ -28,6 +28,9 @@ namespace FasterNGIO::GameData::Internal
 	[[nodiscard]] BaseObjectInfo ExtractBaseObject(const RecordContext& a_record, std::span<const std::uint8_t> a_data);
 	[[nodiscard]] LandTextureInfo ExtractLandTexture(const RecordContext& a_record, std::span<const std::uint8_t> a_data);
 	[[nodiscard]] GrassInfo ExtractGrass(const RecordContext& a_record, std::span<const std::uint8_t> a_data);
+	[[nodiscard]] MaterialTypeInfo ExtractMaterialType(const RecordContext& a_record, std::span<const std::uint8_t> a_data);
+	[[nodiscard]] TextureSetInfo ExtractTextureSet(const RecordContext& a_record, std::span<const std::uint8_t> a_data);
+	[[nodiscard]] MaterialObjectInfo ExtractMaterialObject(const RecordContext& a_record, std::span<const std::uint8_t> a_data);
 
 	// Buffers reused across compressed CELL records.
 	struct CellScanScratch

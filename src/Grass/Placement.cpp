@@ -366,12 +366,12 @@ namespace FasterNGIO::Grass
 						continue;
 					}
 				}
-				const auto ltexIt = a_snapshot.landTexturesByFormID.find(candidate.formID);
-				if (ltexIt == a_snapshot.landTexturesByFormID.end()) {
+				const auto* texture = GrassListTexture(a_snapshot, a_settings, candidate.formID);
+				if (!texture) {
 					continue;
 				}
 
-				ForEachTextureGrass(a_snapshot, ltexIt->second, a_settings.maxGrassTypesPerTexture, [&](const GameData::GrassInfo& a_grass) {
+				ForEachTextureGrass(a_snapshot, *texture, a_settings.maxGrassTypesPerTexture, [&](const GameData::GrassInfo& a_grass) {
 					GrassParamBuild param;
 					param.grass = std::addressof(a_grass);
 					float sum = 0.0f;

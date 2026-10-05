@@ -42,6 +42,17 @@ if(FASTERNGIO_RUNTIME_SHADER_COMPILER)
 	find_path(ORG_MODULE_SERVICES_DXC_INCLUDE_DIR dxcapi.h PATH_SUFFIXES directx-dxc REQUIRED)
 endif()
 
+# No Tracy client in the executable: it raises the profiling privilege, starts kernel sampling and
+# listens on a network port, which prompts for permissions and trips antivirus heuristics. The
+# libraries above still include Tracy's headers, so Tracy::TracyClient is defined here as those
+# headers alone, without TRACY_ENABLE: every zone macro compiles to nothing, and find_package(Tracy)
+# then finds the target already defined and adds nothing.
+find_path(FASTERNGIO_TRACY_INCLUDE_DIR tracy/Tracy.hpp PATH_SUFFIXES tracy REQUIRED)
+add_library(Tracy::TracyClient INTERFACE IMPORTED GLOBAL)
+set_target_properties(Tracy::TracyClient PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${FASTERNGIO_TRACY_INCLUDE_DIR}")
+set(BASICRHI_ENABLE_TRACY_GPU_PROFILING OFF CACHE BOOL "" FORCE)
+set(BASICRHI_ENABLE_TRACY_CPU_PROFILING OFF CACHE BOOL "" FORCE)
+
 set(FASTERNGIO_EXTERNAL_DIR "${PROJECT_SOURCE_DIR}/external")
 add_subdirectory("${FASTERNGIO_EXTERNAL_DIR}/BasicTelemetry" "${CMAKE_BINARY_DIR}/_deps/BasicTelemetry" EXCLUDE_FROM_ALL)
 add_subdirectory("${FASTERNGIO_EXTERNAL_DIR}/BasicRHI" "${CMAKE_BINARY_DIR}/_deps/BasicRHI" EXCLUDE_FROM_ALL)

@@ -25,6 +25,15 @@ namespace FasterNGIO::App
 		None
 	};
 
+	// Seasons of Skyrim's seasonal caches (SeasonsConfig).
+	enum class SeasonsChoice
+	{
+		// When po3_SeasonsOfSkyrim.dll is installed.
+		Auto,
+		On,
+		Off
+	};
+
 	// The ray-cast settings the command line gave; they win over GrassControl.ini.
 	struct RejectionOverrides
 	{
@@ -82,6 +91,9 @@ namespace FasterNGIO::App
 		RejectionOverrides rejectionOverrides;
 		// Experimental: objects with rejecting collision reject by their render geometry instead.
 		bool renderGeometry{ false };
+		SeasonsChoice seasons{ SeasonsChoice::Auto };
+		// Writes the resolved season swaps here instead of generating.
+		std::filesystem::path dumpSeasonSwapsPath;
 
 		// Filled from GrassControl.ini when a run starts (ApplyNgioSettings, ResolveNgioFeatures).
 		// Ensure-max-grass-types-setting: iMaxGrassTypesPerTexure is at least this.

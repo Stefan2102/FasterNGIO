@@ -246,13 +246,31 @@ namespace FasterNGIO::GameData::Internal
 	{
 		BaseObjectInfo info;
 		info.formID = a_record.formID;
+		info.signature = a_record.header.signature;
 		SubrecordCursor cursor(a_data);
 		Subrecord subrecord;
 		while (cursor.Next(subrecord)) {
-			if (subrecord.signature == kSigModl) {
-				info.modelPath = ReadString(subrecord.payload);
+			const auto payload = subrecord.payload;
+			if (subrecord.signature == kSigEdid) {
+				info.editorID = ReadString(payload);
+			} else if (subrecord.signature == kSigModl) {
+				info.modelPath = ReadString(payload);
 			} else if (subrecord.signature == kSigObnd) {
-				info.bounds = ReadObjectBounds(subrecord.payload);
+				info.bounds = ReadObjectBounds(payload);
+			} else if (subrecord.signature == kSigMods && info.alternateTextureSets.empty() && payload.size() >= 4) {
+				// A count, then per texture: a length-prefixed 3D name, the texture set and the 3D index.
+				const auto count = ReadLE<std::uint32_t>(payload, 0);
+				std::size_t offset = 4;
+				for (std::uint32_t i = 0; i < count && offset + 4 <= payload.size(); ++i) {
+					offset += 4 + ReadLE<std::uint32_t>(payload, offset);
+					if (offset + 8 > payload.size()) {
+						break;
+					}
+					info.alternateTextureSets.push_back(a_record.localFormIDs.Resolve(FormID{ ReadLE<std::uint32_t>(payload, offset) }));
+					offset += 8;
+				}
+			} else if (subrecord.signature == kSigDnam && info.signature == kSigStat && payload.size() >= 8) {
+				info.materialObject = a_record.localFormIDs.Resolve(FormID{ ReadLE<std::uint32_t>(payload, 4) });
 			}
 		}
 		return info;
@@ -265,8 +283,59 @@ namespace FasterNGIO::GameData::Internal
 		SubrecordCursor cursor(a_data);
 		Subrecord subrecord;
 		while (cursor.Next(subrecord)) {
-			if (subrecord.signature == kSigGnam && subrecord.payload.size() >= 4) {
+			if (subrecord.signature == kSigEdid) {
+				info.editorID = ReadString(subrecord.payload);
+			} else if (subrecord.signature == kSigMnam && subrecord.payload.size() >= 4) {
+				info.materialType = a_record.localFormIDs.Resolve(FormID{ ReadLE<std::uint32_t>(subrecord.payload, 0) });
+			} else if (subrecord.signature == kSigGnam && subrecord.payload.size() >= 4) {
 				info.grassFormIDs.push_back(a_record.localFormIDs.Resolve(FormID{ ReadLE<std::uint32_t>(subrecord.payload, 0) }));
+			}
+		}
+		return info;
+	}
+
+	MaterialTypeInfo ExtractMaterialType(const RecordContext& a_record, std::span<const std::uint8_t> a_data)
+	{
+		MaterialTypeInfo info;
+		info.formID = a_record.formID;
+		SubrecordCursor cursor(a_data);
+		Subrecord subrecord;
+		while (cursor.Next(subrecord)) {
+			if (subrecord.signature == kSigEdid) {
+				info.editorID = ReadString(subrecord.payload);
+			} else if (subrecord.signature == kSigMnam) {
+				info.name = ReadString(subrecord.payload);
+			}
+		}
+		return info;
+	}
+
+	TextureSetInfo ExtractTextureSet(const RecordContext& a_record, std::span<const std::uint8_t> a_data)
+	{
+		TextureSetInfo info;
+		info.formID = a_record.formID;
+		SubrecordCursor cursor(a_data);
+		Subrecord subrecord;
+		while (cursor.Next(subrecord)) {
+			if (subrecord.signature == kSigEdid) {
+				info.editorID = ReadString(subrecord.payload);
+			} else if (subrecord.signature == kSigTx00) {
+				info.diffuse = ReadString(subrecord.payload);
+			}
+		}
+		return info;
+	}
+
+	MaterialObjectInfo ExtractMaterialObject(const RecordContext& a_record, std::span<const std::uint8_t> a_data)
+	{
+		MaterialObjectInfo info;
+		info.formID = a_record.formID;
+		SubrecordCursor cursor(a_data);
+		Subrecord subrecord;
+		while (cursor.Next(subrecord)) {
+			if (subrecord.signature == kSigEdid) {
+				info.editorID = ReadString(subrecord.payload);
+				break;
 			}
 		}
 		return info;

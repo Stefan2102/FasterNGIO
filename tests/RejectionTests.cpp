@@ -1,4 +1,5 @@
 #include "Archives/ArchiveResolver.h"
+#include "GameData/ModelPath.h"
 #include "GameData/Records.h"
 #include "GameData/StaticWorld.h"
 #include "Gpu/ModelPacking.h"
@@ -12,6 +13,8 @@
 #include "TestSupport.h"
 
 #include <gtest/gtest.h>
+
+#include <format>
 
 #include <bit>
 #include <cstring>
@@ -190,6 +193,36 @@ TEST(WorldIndex, LeavesOutIgnoredBaseForms)
 	const Rejection::WorldIndex index(snapshot, FormID{ 0x3C }, resolver, features, 0.0f);
 	EXPECT_EQ(index.Stats().referencesIgnored, 1u);
 	EXPECT_EQ(index.Stats().references, 1u);
+}
+
+TEST(WorldIndex, UsesTheSeasonsReplacementBase)
+{
+	using GameData::FormID;
+	GameData::StaticWorldSnapshot snapshot;
+	for (const std::uint32_t base : { 0x800u, 0x801u, 0x802u }) {
+		auto& object = snapshot.baseObjectsByFormID[FormID{ base }];
+		object.formID = FormID{ base };
+		object.modelPath = std::format("rock{}.nif", base);
+	}
+	auto& placements = snapshot.exteriorPlacementsByCell[GameData::CellKey{ .worldFormID = FormID{ 0x3C }, .x = 0, .y = 0 }];
+	for (const std::uint32_t base : { 0x800u, 0x802u }) {
+		auto& placement = placements.emplace_back();
+		placement.formID = FormID{ base + 0x100 };
+		placement.baseFormID = FormID{ base };
+	}
+
+	const Tests::TempDirectory data;
+	const Archives::ArchiveResolver resolver(data.Path(), {});
+	Rejection::RejectionFeatures features;
+	features.baseSwaps.emplace(FormID{ 0x800 }, FormID{ 0x801 });
+	// Ignore forms and NGIO roles follow the replacement.
+	features.ignoredBaseForms.insert(FormID{ 0x801 });
+	const Rejection::WorldIndex index(snapshot, FormID{ 0x3C }, resolver, features, 0.0f);
+	EXPECT_EQ(index.Stats().referencesSwapped, 1u);
+	EXPECT_EQ(index.Stats().referencesIgnored, 1u);
+	// Only the unswapped reference's model (0x802) is loaded: 0x800's never is.
+	ASSERT_EQ(index.Models().size(), 1u);
+	EXPECT_EQ(index.Models()[0].path, GameData::NormalizeModelPath(std::format("rock{}.nif", 0x802)));
 }
 
 TEST(SegmentHits, MeetEachPrimitiveKind)
