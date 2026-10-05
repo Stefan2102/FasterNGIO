@@ -10,7 +10,9 @@ FasterNGIO --data "<Skyrim>\Data" --out "<mod>\Grass" [--world 0x3C] [--plugins 
 ```
 
 Run it under Mod Organizer 2 (so the virtual Data folder is visible) and use `--help` for the
-placement and NGIO `[RayCastConfig]` options. On Linux it runs natively (no Proton): Data paths are
+placement and NGIO `[RayCastConfig]` options. `--world all` generates every worldspace with
+terrain, as NGIO's own pregeneration does. Without Mod Organizer 2, run it without arguments to get
+a window (see below). On Linux it runs natively (no Proton): Data paths are
 resolved case-insensitively as the game does, and `--plugins` defaults to the Steam Proton prefix's
 `plugins.txt`. The Linux build needs only glibc and, for GPU rejection, a Vulkan driver with ray tracing and
 `VK_EXT_descriptor_heap`; its shaders are compiled at build time.
@@ -40,5 +42,22 @@ Rejection backends (`--reject`):
   default, Vulkan everywhere else; Vulkan needs `VK_EXT_descriptor_heap`).
 
 Both backends produce the same caches (to a few float-precision edge cases per million blades).
+
+## Without Mod Organizer 2
+
+Run `FasterNGIO` without arguments (double-click it) and a window opens instead:
+
+1. Choose the Skyrim Special Edition folder, the one with `SkyrimSE.exe`. It can be anywhere,
+   including a copy outside Steam. The load order is read from the game's own `plugins.txt` (Steam,
+   GOG, Epic and Microsoft Store builds each keep theirs in a different folder). Under Advanced you
+   can choose another `plugins.txt` or game INI folder.
+2. Leave the output empty to write to `Data\Grass`, where NGIO and DynDOLOD read the cache, or choose
+   another folder (a mod manager's mod folder, for example).
+3. Click Generate. By default every worldspace is generated.
+
+This is how Vortex users (whose mods are deployed into the real Data folder) and manual installs run
+it. The window remembers its settings in `%LOCALAPPDATA%\FasterNGIO` (`~/.config/fasterngio` on
+Linux, where the folder chooser uses zenity or kdialog). Any command-line argument runs the command
+line as before, so MO2 setups are unaffected; `--gui` opens the window from MO2 too.
 
 Licensed under the GNU General Public License v3 (see `LICENSE`).

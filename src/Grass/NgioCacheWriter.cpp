@@ -1,68 +1,65 @@
 #include "Grass/NgioCacheWriter.h"
 
-#include <fstream>
-#include <stdexcept>
+#include "Platform/WholeFile.h"
 
 namespace FasterNGIO::Grass
 {
 	namespace
 	{
-		void WriteU32(std::ostream& a_output, std::uint32_t a_value)
+		void AppendU32(std::vector<std::uint8_t>& a_output, std::uint32_t a_value)
 		{
-			const std::array<char, 4> bytes{
-				static_cast<char>(a_value & 0xFFu),
-				static_cast<char>((a_value >> 8) & 0xFFu),
-				static_cast<char>((a_value >> 16) & 0xFFu),
-				static_cast<char>((a_value >> 24) & 0xFFu),
-			};
-			a_output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+			a_output.push_back(static_cast<std::uint8_t>(a_value & 0xFFu));
+			a_output.push_back(static_cast<std::uint8_t>((a_value >> 8) & 0xFFu));
+			a_output.push_back(static_cast<std::uint8_t>((a_value >> 16) & 0xFFu));
+			a_output.push_back(static_cast<std::uint8_t>((a_value >> 24) & 0xFFu));
 		}
 
-		void WriteByte(std::ostream& a_output, bool a_value)
+		[[nodiscard]] std::size_t EncodedSize(const NgioCellCache& a_cache)
 		{
-			const char byte = a_value ? 1 : 0;
-			a_output.write(std::addressof(byte), 1);
+			std::size_t size = 4;
+			for (const auto& group : a_cache.groups) {
+				size += 4 + group.modelPath.size() + 1 + 4 + 4 + 3 + 4;
+				for (const auto& block : group.blocks) {
+					size += block.descriptorWords.size() * 4 + block.payloadWords.size() * 2;
+				}
+			}
+			return size;
 		}
+	}
+
+	std::vector<std::uint8_t> SerializeNgioCellCache(const NgioCellCache& a_cache)
+	{
+		std::vector<std::uint8_t> output;
+		output.reserve(EncodedSize(a_cache));
+		AppendU32(output, static_cast<std::uint32_t>(a_cache.groups.size()));
+		for (const auto& group : a_cache.groups) {
+			AppendU32(output, static_cast<std::uint32_t>(group.modelPath.size() + 1));
+			output.insert(output.end(), group.modelPath.begin(), group.modelPath.end());
+			output.push_back(0);
+
+			AppendU32(output, group.grassModelData);
+			AppendU32(output, group.grassFormID);
+			output.push_back(group.vertexLighting ? 1 : 0);
+			output.push_back(group.uniformScaling ? 1 : 0);
+			output.push_back(group.fitToSlope ? 1 : 0);
+			AppendU32(output, static_cast<std::uint32_t>(group.blocks.size()));
+
+			for (const auto& block : group.blocks) {
+				for (const auto word : block.descriptorWords) {
+					AppendU32(output, word);
+				}
+				for (const auto word : block.payloadWords) {
+					output.push_back(static_cast<std::uint8_t>(word & 0xFFu));
+					output.push_back(static_cast<std::uint8_t>((word >> 8) & 0xFFu));
+				}
+			}
+		}
+		return output;
 	}
 
 	void WriteNgioCellCache(const std::filesystem::path& a_path, const NgioCellCache& a_cache)
 	{
 		std::filesystem::create_directories(a_path.parent_path());
-
-		std::ofstream output(a_path, std::ios::binary | std::ios::trunc);
-		if (!output) {
-			throw std::runtime_error("failed to open NGIO cache file for writing: " + a_path.string());
-		}
-
-		WriteU32(output, static_cast<std::uint32_t>(a_cache.groups.size()));
-		for (const auto& group : a_cache.groups) {
-			WriteU32(output, static_cast<std::uint32_t>(group.modelPath.size() + 1));
-			output.write(group.modelPath.data(), static_cast<std::streamsize>(group.modelPath.size()));
-			output.put('\0');
-
-			WriteU32(output, group.grassModelData);
-			WriteU32(output, group.grassFormID);
-			WriteByte(output, group.vertexLighting);
-			WriteByte(output, group.uniformScaling);
-			WriteByte(output, group.fitToSlope);
-			WriteU32(output, static_cast<std::uint32_t>(group.blocks.size()));
-
-			for (const auto& block : group.blocks) {
-				for (const auto word : block.descriptorWords) {
-					WriteU32(output, word);
-				}
-				for (const auto word : block.payloadWords) {
-					const std::array<char, 2> bytes{
-						static_cast<char>(word & 0xFFu),
-						static_cast<char>((word >> 8) & 0xFFu),
-					};
-					output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-				}
-			}
-		}
-
-		if (!output) {
-			throw std::runtime_error("failed while writing NGIO cache file: " + a_path.string());
-		}
+		Platform::WriteWholeFile(a_path, SerializeNgioCellCache(a_cache));
 	}
 }

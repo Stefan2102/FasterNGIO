@@ -1,5 +1,5 @@
 @echo off
-rem Builds FasterNGIO for Windows (CMake preset) and Linux (tools/build_linux.sh under WSL).
+rem Builds and packages FasterNGIO for Windows (CMake preset) and Linux (tools/build_linux.sh under WSL).
 rem
 rem   build.cmd [all|windows|linux] [cpu] [test]
 rem
@@ -8,7 +8,10 @@ rem   cpu            the CPU-only variant (vs2026-cpu, Linux without the GPU sta
 rem   test           run the tests after building
 rem
 rem Windows needs VCPKG_ROOT and Visual Studio 2026. Linux runs in the WSL distribution named by
-rem FASTERNGIO_WSL_DISTRO (default Ubuntu); see tools/build_linux.sh for its toolchain settings.
+rem FASTERNGIO_WSL_DISTRO (default Ubuntu): missing build tools are installed there as root, and vcpkg and
+rem Vulkan-Headers fetched; see tools/build_linux.sh for its toolchain settings.
+rem
+rem Release folders: release\FasterNGIO-windows[-cpu] and release\FasterNGIO-linux[-cpu].
 setlocal
 
 set "TARGET=all"
@@ -33,6 +36,8 @@ goto parse
 if not defined FASTERNGIO_WSL_DISTRO set "FASTERNGIO_WSL_DISTRO=Ubuntu"
 set "PRESET=vs2026"
 if "%VARIANT%"=="cpu" set "PRESET=vs2026-cpu"
+set "SUFFIX="
+if "%VARIANT%"=="cpu" set "SUFFIX=-cpu"
 set "LINUX_ARGS=%VARIANT%"
 if defined TEST set "LINUX_ARGS=%VARIANT% --test"
 
@@ -49,11 +54,17 @@ cmake --preset %PRESET% || goto fail
 cmake --build --preset %PRESET% || goto fail
 if defined TEST (ctest --preset %PRESET% || goto fail)
 echo Windows build: %~dp0build\%PRESET%\bin\RelWithDebInfo
+set "RELEASE=%~dp0release\FasterNGIO-windows%SUFFIX%"
+if exist "%RELEASE%" rmdir /s /q "%RELEASE%"
+cmake --install build\%PRESET% --config RelWithDebInfo --component FasterNGIO --prefix "%RELEASE%" || goto fail
+echo Windows release: %RELEASE%
 
 if "%TARGET%"=="windows" goto done
 
 :linux
 echo === Linux (%VARIANT%, WSL %FASTERNGIO_WSL_DISTRO%) ===
+rem As root so a fresh distribution gets its compiler, cmake and ninja without a sudo prompt.
+wsl -d %FASTERNGIO_WSL_DISTRO% -u root --cd "%~dp0." -- bash tools/setup_linux.sh packages || goto fail
 wsl -d %FASTERNGIO_WSL_DISTRO% --cd "%~dp0." -- bash tools/build_linux.sh %LINUX_ARGS% || goto fail
 
 :done

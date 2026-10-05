@@ -1,7 +1,9 @@
 #include "Pipeline/CellPipeline.h"
 
 #include "Grass/NgioCacheWriter.h"
+#include "Pipeline/CacheWriter.h"
 #include "Pipeline/TbbGraphScheduler.h"
+#include "Platform/WholeFile.h"
 #include "Rejection/CpuBvh.h"
 #include "Rejection/CpuReference.h"
 #if FASTERNGIO_HAS_GPU
@@ -41,6 +43,7 @@ namespace FasterNGIO::Pipeline
 		struct CellWork
 		{
 			bool skip{ false };
+			bool cancelled{ false };
 			bool holdsCapacity{ false };
 			std::string error;
 			Grass::CellCandidates candidates;
@@ -136,7 +139,8 @@ namespace FasterNGIO::Pipeline
 			explicit Pipeline(const CellPipelineDesc& a_desc) :
 				_desc(a_desc),
 				_graph(MakeTbbGraphScheduler(), "FasterNGIO", MakeHooks()),
-				_capacity(a_desc.maxCellsAwaitingGpu, _graph.MakeSuspensionNotifier())
+				_capacity(a_desc.maxCellsAwaitingGpu, _graph.MakeSuspensionNotifier()),
+				_writeNotify(_graph.MakeSuspensionNotifier())
 			{
 				_graph.RegisterTypedProducer<CellInput, CellTraceArtifact>(kCellTrace, 0, 0, "FasterNGIO::CellTrace",
 					[this](const BuildContext& a_context, std::shared_ptr<const CellInput> a_input) { return BuildTrace(a_context, *a_input); });
@@ -176,6 +180,7 @@ namespace FasterNGIO::Pipeline
 				stats.cellsWritten = _written.load();
 				stats.cellsSkipped = _skipped.load();
 				stats.cellsFailed = _failed.load();
+				stats.cellsCancelled = _cancelled.load();
 				stats.blades = _blades.load();
 				stats.bladesRejected = _rejected.load();
 				stats.validationMismatches = _mismatches.load();
@@ -222,9 +227,20 @@ namespace FasterNGIO::Pipeline
 			{
 				auto work = std::make_shared<CellWork>();
 				try {
+					if (_desc.stop.stop_requested()) {
+						work->cancelled = true;
+						return Ready(std::move(work));
+					}
 					if (!_desc.overwrite && Grass::ExistingNgioCacheLooksValid(CellPath(a_input.cell))) {
 						work->skip = true;
 						return Ready(std::move(work));
+					}
+					// Before anything is held: a cell is not placed while its file would only queue behind a
+					// full backlog.
+					if (_desc.writer) {
+						if (const auto identity = _desc.writer->AdmitOrWait(_writeNotify); identity != 0) {
+							return BuildResult::Suspend(Graph::ArtifactSuspension::Capacity(identity, "the cache writers are behind"));
+						}
 					}
 					if (_desc.backend == RejectionBackend::Gpu) {
 						if (const auto identity = _capacity.AcquireOrWait(); identity != 0) {
@@ -285,6 +301,15 @@ namespace FasterNGIO::Pipeline
 			}
 #endif
 
+			void CountFinished()
+			{
+				if (_desc.progress) {
+					_desc.progress->fetch_add(1, std::memory_order_relaxed);
+				}
+				_finished.fetch_add(1, std::memory_order_acq_rel);
+				_finished.notify_all();
+			}
+
 			void Finish(CellWork& a_work)
 			{
 				if (a_work.holdsCapacity) {
@@ -292,8 +317,7 @@ namespace FasterNGIO::Pipeline
 					_capacity.Release();
 				}
 				a_work = CellWork{};
-				_finished.fetch_add(1, std::memory_order_acq_rel);
-				_finished.notify_all();
+				CountFinished();
 			}
 
 			BuildResult BuildOutput(const BuildContext& a_context, const CellInput& a_input)
@@ -307,14 +331,18 @@ namespace FasterNGIO::Pipeline
 				const auto done = BuildResult::Ready(org::async::ArtifactPayload::Make<CellDone>(std::make_shared<const CellDone>()));
 				if (!trace || !trace->work) {
 					_failed.fetch_add(1);
-					_finished.fetch_add(1, std::memory_order_acq_rel);
-					_finished.notify_all();
+					CountFinished();
 					return done;
 				}
 				auto& work = *trace->work;
 				try {
 					if (work.skip) {
 						_skipped.fetch_add(1);
+						Finish(work);
+						return done;
+					}
+					if (work.cancelled) {
+						_cancelled.fetch_add(1);
 						Finish(work);
 						return done;
 					}
@@ -340,7 +368,12 @@ namespace FasterNGIO::Pipeline
 					}
 					_rejected.fetch_add(CountBits(work.rejected));
 					_blades.fetch_add(work.candidates.blades.size());
-					Grass::WriteNgioCellCache(CellPath(a_input.cell), Grass::FinalizeCell(work.candidates, work.rejected, _desc.placement.grassInstanceStrideWords));
+					auto bytes = Grass::SerializeNgioCellCache(Grass::FinalizeCell(work.candidates, work.rejected, _desc.placement.grassInstanceStrideWords));
+					if (_desc.writer) {
+						_desc.writer->Submit(CellPath(a_input.cell), std::move(bytes), _desc.writeTally);
+					} else {
+						Platform::WriteWholeFile(CellPath(a_input.cell), bytes);
+					}
 					_written.fetch_add(1);
 				} catch (const std::exception& e) {
 					spdlog::error("cell {}: {}", CellPath(a_input.cell).filename().string(), e.what());
@@ -388,10 +421,12 @@ namespace FasterNGIO::Pipeline
 			const CellPipelineDesc& _desc;
 			Graph _graph;
 			CapacityBroker _capacity;
+			std::function<void(std::uint64_t)> _writeNotify;
 			std::atomic<std::uint32_t> _finished{ 0 };
 			std::atomic<std::uint64_t> _written{ 0 };
 			std::atomic<std::uint64_t> _skipped{ 0 };
 			std::atomic<std::uint64_t> _failed{ 0 };
+			std::atomic<std::uint64_t> _cancelled{ 0 };
 			std::atomic<std::uint64_t> _blades{ 0 };
 			std::atomic<std::uint64_t> _rejected{ 0 };
 			std::atomic<std::uint64_t> _mismatches{ 0 };

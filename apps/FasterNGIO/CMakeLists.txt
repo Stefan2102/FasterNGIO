@@ -1,6 +1,24 @@
-add_executable(FasterNGIO Main.cpp)
+add_executable(FasterNGIO
+	Main.cpp
+	Generate.cpp
+	Generate.h
+	Gui/Launcher.cpp
+	Gui/Launcher.h
+	Gui/LogSink.h
+	Gui/Window.h
+)
+# The launcher window: Win32 + D3D11 on Windows, GLFW + OpenGL 3 elsewhere (GLFW and ImGui's GL loader
+# load X11 and libGL at runtime, so the command line still needs only glibc).
+if(WIN32)
+	target_sources(FasterNGIO PRIVATE Gui/WindowWin32.cpp)
+	target_link_libraries(FasterNGIO PRIVATE d3d11 dxgi Shell32 Ole32)
+else()
+	target_sources(FasterNGIO PRIVATE Gui/WindowGlfw.cpp)
+endif()
+find_package(imgui CONFIG REQUIRED)
 fasterngio_configure_target(FasterNGIO)
-target_link_libraries(FasterNGIO PRIVATE FasterNGIOCore FasterNGIOPipeline)
+target_include_directories(FasterNGIO PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(FasterNGIO PRIVATE FasterNGIOCore FasterNGIOPipeline imgui::imgui)
 if(FASTERNGIO_ENABLE_GPU)
 	target_link_libraries(FasterNGIO PRIVATE FasterNGIOGpu)
 	if(FASTERNGIO_RUNTIME_SHADER_COMPILER)
@@ -11,6 +29,8 @@ if(FASTERNGIO_ENABLE_GPU)
 			COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FASTERNGIO_DXC_RUNTIME} "$<TARGET_FILE_DIR:FasterNGIO>"
 			COMMENT "Deploying FasterNGIO shaders"
 			VERBATIM)
+		install(DIRECTORY "${PROJECT_SOURCE_DIR}/shaders/" DESTINATION shaders COMPONENT FasterNGIO)
+		install(FILES ${FASTERNGIO_DXC_RUNTIME} DESTINATION . COMPONENT FasterNGIO)
 	else()
 		# Every variant GpuRejector can ask for (GpuRejector.cpp, PrecompiledShaderName), compiled with
 		# the arguments ORGModuleServices' ShaderCompiler would use at runtime.
@@ -47,6 +67,12 @@ if(FASTERNGIO_ENABLE_GPU)
 			DEPENDS ${_shader_outputs}
 			COMMENT "Deploying FasterNGIO shaders"
 			VERBATIM)
+		install(FILES ${_shader_outputs} DESTINATION shaders COMPONENT FasterNGIO)
 	endif()
 	add_dependencies(FasterNGIO FasterNGIOShaders)
 endif()
+
+# The release folder that build.cmd and tools/build_linux.sh fill (cmake --install --component
+# FasterNGIO); a component of its own so the submodules' install rules stay out of it.
+install(TARGETS FasterNGIO RUNTIME DESTINATION . COMPONENT FasterNGIO)
+install(FILES "${PROJECT_SOURCE_DIR}/README.md" "${PROJECT_SOURCE_DIR}/LICENSE" DESTINATION . COMPONENT FasterNGIO)

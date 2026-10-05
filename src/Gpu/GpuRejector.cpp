@@ -485,6 +485,11 @@ namespace FasterNGIO::Gpu
 
 		void PostWorld(std::shared_ptr<const Rejection::WorldIndex> a_world)
 		{
+			// The counters describe one world. Nothing of the previous world is still running (see ReleaseWorld).
+			for (auto* counter : { &_statModels, &_statInstances, &_statBlasBytes, &_statModelBytes, &_statFrames, &_statQueries }) {
+				counter->store(0, std::memory_order_relaxed);
+			}
+			_statWorldSeconds.store(0.0, std::memory_order_relaxed);
 			_inbox.Push(Command{ std::move(a_world) });
 			Wake();
 		}
@@ -836,9 +841,32 @@ namespace FasterNGIO::Gpu
 			Check(_device->CreateShaderResourceView({ _heap->GetHandle(), a_slot }, a_resource->GetHandle(), srv), "structured SRV");
 		}
 
+		// A later world replaces the current one. Its jobs have all completed (the caller waits for them
+		// before posting the next world, and the inbox is in order), so once the device is idle its
+		// resources and descriptors can go.
+		void ReleaseWorld()
+		{
+			_device->WaitIdle();
+			for (const auto& model : _models) {
+				if (model.data) {
+					_freeDescriptors.push_back(model.srv);
+				}
+			}
+			_models.clear();
+			_freeDescriptors.push_back(_tlasSrv);
+			_tlas = {};
+			_tlasStorage = {};
+			_tlasInstances = {};
+			_tlasGeometry = {};
+			_worldReady = false;
+		}
+
 		void BuildWorldOnRenderThread(const Rejection::WorldIndex& a_world)
 		{
 			const auto begin = std::chrono::steady_clock::now();
+			if (_worldReady) {
+				ReleaseWorld();
+			}
 			const auto& models = a_world.Models();
 			const auto& instances = a_world.Instances();
 

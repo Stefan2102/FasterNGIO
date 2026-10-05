@@ -12,11 +12,12 @@ or CommonLibSSE.
 | `src/GameData/` | Plugin (ESM/ESP/ESL) parsing, load order, static world snapshot. Copied from SARP; adds OBND and FLOR/SCOL/TACT. |
 | `src/Grass/` | Grass placement split into `GenerateCellCandidates` and `FinalizeCell`: vanilla (engine RNG emulation) and smooth (`SmoothWeightField`); the game's `[Grass]` INI settings (`GameIni`); the `.cgid` writer. |
 | `src/Archives/` | Memory-mapped BSA (v103/104/105) reader and load-order-aware resolver (loose files win). |
-| `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows); `IniFile`. |
+| `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows); `IniFile`; `GameInstall` (validates a game folder, detects the store build, derives plugins.txt and the INI folder); `UserSettings` (the launcher's remembered choices). |
 | `src/Collision/` | nifly-based Havok collision extraction (CMS, packed strips, convex hulls, boxes, spheres, capsules) into model space. |
 | `src/Rejection/` | NGIO query shapes, the per-world instance index, the CPU BVH fallback (`CpuBvh`) and the brute-force reference. |
 | `src/Gpu/` | `GpuRejector`: feature check, the render thread (OpenRenderGraph `PersistentGraphHost`), BLAS/TLAS, ray-tracing pipeline, one DispatchRays per frame, readback. |
 | `src/Pipeline/` | Lock-free cell pipeline on ORGModuleServices' AsyncStateGraph; TBB graph scheduler; MPSC queue. |
+| `apps/FasterNGIO/` | `Main.cpp` (argument parsing, CLI or launcher), `Generate` (the run itself, shared by both: snapshot, per-world loop, progress and cancellation), `Gui/` (the ImGui launcher; Win32 + D3D11 on Windows, GLFW + OpenGL 3 elsewhere). |
 | `shaders/` | `GrassRejection.hlsl` (DXIL for D3D12, SPIR-V for Vulkan) and `Shared/GrassQueryMath.hlsli`, which the CPU paths also compile (`src/Rejection/HlslShim.h`). |
 | `tools/` | `analyze_placement_edges.py`: grid-locking and corner statistics of `--export-blades` output, with a grid-free control. |
 | `external/` | Submodules: BasicRHI, OpenRenderGraph, ORGModuleServices, BasicTelemetry, volk (pinned to BasicRenderer's commits) and upstream nifly. |
@@ -38,6 +39,14 @@ cmake --build --preset linux && ctest --preset linux
 (`FASTERNGIO_WSL_DISTRO`, default Ubuntu), runs `tools/build_linux.sh`, which also builds natively. It
 takes `VCPKG_ROOT`, `VULKAN_HEADERS_DIR`, `FASTERNGIO_DXC_EXECUTABLE` and `FASTERNGIO_BUILD_DIR` from
 the environment or from an untracked `build-linux.env` in the repository root; keep machine paths there.
+What is missing comes from `tools/setup_linux.sh`: the compiler, cmake and ninja through apt (build.cmd
+runs that step as root in WSL), and vcpkg and Vulkan-Headers in `~/.local/share/fasterngio` when the
+variables are unset. Under WSL with the repository on a Windows drive the build directory defaults to
+`~/.cache/fasterngio/build`, since the Linux filesystem builds several times faster.
+
+Both scripts then package the release folders `release/FasterNGIO-windows[-cpu]` and
+`release/FasterNGIO-linux[-cpu]` (stripped) with `cmake --install --component FasterNGIO`. Anything
+the executable needs at runtime must be installed into that component.
 
 vcpkg (`VCPKG_ROOT`) provides zlib, lz4, TBB, spdlog, fmt, gtest, Tracy and, for the GPU build,
 directx-headers, directx-dxc, flecs, boost-container-hash, nlohmann-json, sqlite3 and (off Windows)
@@ -81,9 +90,19 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
 - **One source of geometric truth.** Exact overlap tests live in `shaders/Shared/GrassQueryMath.hlsli`
   and are compiled by the GPU, the CPU BVH and the brute-force reference (`PrimitiveTests.h` wraps
   them per primitive). Change them there, never in one copy.
+- **Arguments mean the command line, unchanged.** No arguments (or `--gui`) opens the launcher; any
+  other arguments, as MO2 passes them, must behave exactly as before. The launcher only builds
+  `CliOptions` and calls `App::Run`, so anything generation does belongs in `Generate.cpp`, not `Gui/`.
+  A world's output must not depend on whether it ran alone or under `--world all`.
 - **Fallback is decided up front.** `GpuRejector` checks every feature it needs before any work is
   posted and throws `GpuUnsupportedError` listing what is missing; `--reject auto` then uses the CPU
   BVH. Add any new GPU requirement to that check.
+- **Files are written by the writer threads.** `Pipeline::CacheWriter` (one thread by default,
+  `--writers`) writes every `.cgid`, one call per file; workers only serialize and queue, and suspend
+  in the graph while the backlog is over budget. File creation is serialized by NTFS and antivirus
+  scanning (about 150-300 us per file here, whatever the thread count), so it bounds a full run; a
+  world's pipeline returns once its files are queued so the next world prepares meanwhile. Empty
+  cells still get their 4-byte file: NGIO treats a missing file differently.
 - **No locks on the hot paths.** Workers and the render thread communicate through the AsyncStateGraph
   (producers, GPU submission tokens, capacity suspensions) and `Pipeline::MpscQueue`. The CPU BVH,
   `SmoothWeightField` and `DataDirectory` are built up front and immutable afterwards. Do not add mutexes or condition variables to the

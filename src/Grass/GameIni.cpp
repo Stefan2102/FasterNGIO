@@ -1,6 +1,7 @@
 #include "Grass/GameIni.h"
 
 #include "Platform/DataDirectory.h"
+#include "Platform/GameInstall.h"
 #include "Platform/IniFile.h"
 
 #include <cstdlib>
@@ -15,8 +16,6 @@ namespace FasterNGIO::Grass
 {
 	namespace
 	{
-		constexpr const char* kGameFolder = "Skyrim Special Edition";
-
 		[[nodiscard]] bool IsDirectory(const std::filesystem::path& a_path)
 		{
 			std::error_code error;
@@ -95,9 +94,9 @@ namespace FasterNGIO::Grass
 			}
 		}
 		const auto myGames = DocumentsDirectory(a_pluginsTxt) / "My Games";
-		for (const auto* folder : { kGameFolder, "Skyrim Special Edition GOG" }) {
-			if (IsDirectory(myGames / folder)) {
-				return GameIniDirectory{ myGames / folder, "My Games" };
+		for (const auto store : { Platform::GameStore::Steam, Platform::GameStore::Gog, Platform::GameStore::Epic, Platform::GameStore::MicrosoftStore }) {
+			if (const auto folder = myGames / Platform::GameUserFolderName(store); IsDirectory(folder)) {
+				return GameIniDirectory{ folder, "My Games" };
 			}
 		}
 		return std::nullopt;

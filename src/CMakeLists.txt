@@ -19,8 +19,14 @@ add_library(FasterNGIOCore STATIC
 	Grass/Placement.h
 	Platform/DataDirectory.cpp
 	Platform/DataDirectory.h
+	Platform/GameInstall.cpp
+	Platform/GameInstall.h
 	Platform/IniFile.cpp
 	Platform/IniFile.h
+	Platform/UserSettings.cpp
+	Platform/UserSettings.h
+	Platform/WholeFile.cpp
+	Platform/WholeFile.h
 	Rejection/CpuBvh.cpp
 	Rejection/CpuBvh.h
 	Rejection/CpuReference.cpp
@@ -72,6 +78,8 @@ endif()
 add_library(FasterNGIOPipeline STATIC
 	Pipeline/CellPipeline.cpp
 	Pipeline/CellPipeline.h
+	Pipeline/CacheWriter.cpp
+	Pipeline/CacheWriter.h
 	Pipeline/MpscQueue.h
 	Pipeline/TbbGraphScheduler.cpp
 	Pipeline/TbbGraphScheduler.h

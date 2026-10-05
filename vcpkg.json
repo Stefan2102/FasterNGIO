@@ -13,6 +13,19 @@
     "fmt",
     "gtest",
     {
+      "name": "imgui",
+      "features": [
+        { "name": "win32-binding", "platform": "windows" },
+        { "name": "dx11-binding", "platform": "windows" },
+        { "name": "glfw-binding", "platform": "!windows" },
+        { "name": "opengl3-binding", "platform": "!windows" }
+      ]
+    },
+    {
+      "name": "glfw3",
+      "platform": "!windows"
+    },
+    {
       "name": "tracy",
       "features": [ "on-demand" ]
     }

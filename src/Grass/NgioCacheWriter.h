@@ -34,5 +34,9 @@ namespace FasterNGIO::Grass
 		std::vector<NgioGrassGroup> groups;
 	};
 
+	// The .cgid bytes, as the game reads them (little-endian).
+	[[nodiscard]] std::vector<std::uint8_t> SerializeNgioCellCache(const NgioCellCache& a_cache);
+
+	// Creates a_path's folder and writes the file in one call.
 	void WriteNgioCellCache(const std::filesystem::path& a_path, const NgioCellCache& a_cache);
 }

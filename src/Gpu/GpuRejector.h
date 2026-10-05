@@ -139,13 +139,14 @@ namespace FasterNGIO::Gpu
 		GpuRejector& operator=(const GpuRejector&) = delete;
 
 		// Posts the world (BLAS per model, one TLAS). Jobs posted before the world is built wait
-		// on the render thread. The index must outlive the rejector.
+		// on the render thread; the index is only read while it builds. Posting another world
+		// replaces it: every job traced against the previous one must have completed first.
 		void PostWorld(std::shared_ptr<const Rejection::WorldIndex> a_world);
 
 		// Lock-free; callable from any thread.
 		void Post(std::shared_ptr<TraceJob> a_job);
 
-		// Snapshot of monotonically updated counters.
+		// Snapshot of the current world's counters.
 		[[nodiscard]] GpuRejectorStats Stats() const;
 
 	private:

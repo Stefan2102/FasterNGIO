@@ -5,8 +5,11 @@
 #include "Rejection/RejectionConfig.h"
 #include "Rejection/WorldIndex.h"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <stop_token>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -19,6 +22,12 @@ namespace FasterNGIO::Gpu
 namespace FasterNGIO::Rejection
 {
 	class CpuBvh;
+}
+
+namespace FasterNGIO::Pipeline
+{
+	class CacheWriter;
+	struct WriteTally;
 }
 
 namespace FasterNGIO::Pipeline
@@ -50,13 +59,23 @@ namespace FasterNGIO::Pipeline
 		// Cells whose candidates may wait for the GPU at once. Producers past the limit suspend
 		// in the graph until a cell is written; nothing blocks.
 		std::uint32_t maxCellsAwaitingGpu{ 4096 };
+		// Counts cells as they finish (written, skipped, failed or cancelled), for a progress display.
+		std::atomic<std::uint32_t>* progress{ nullptr };
+		// Cells not yet started when a stop is requested are cancelled instead of placed.
+		std::stop_token stop;
+		// Finished files go to these writer threads (counted in writeTally) instead of being written by
+		// the worker; producers suspend while its backlog is over budget. Null: written inline.
+		CacheWriter* writer{ nullptr };
+		std::shared_ptr<WriteTally> writeTally;
 	};
 
 	struct CellPipelineStats
 	{
+		// Written, or handed to the writer (whose WriteTally has the outcome).
 		std::uint64_t cellsWritten{ 0 };
 		std::uint64_t cellsSkipped{ 0 };
 		std::uint64_t cellsFailed{ 0 };
+		std::uint64_t cellsCancelled{ 0 };
 		std::uint64_t blades{ 0 };
 		std::uint64_t bladesRejected{ 0 };
 		std::uint64_t validationMismatches{ 0 };
