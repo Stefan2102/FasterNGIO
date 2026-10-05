@@ -207,18 +207,28 @@ namespace FasterNGIO::App
 		// The worldspaces a run generates, in order.
 		[[nodiscard]] std::vector<GameData::FormID> SelectWorlds(const GenerateOptions& a_options, const GameData::StaticWorldSnapshot& a_snapshot)
 		{
-			if (!a_options.allWorlds) {
-				return { a_options.worldFormID };
-			}
+			const auto available = ListWorlds(a_snapshot);
 			std::vector<GameData::FormID> worlds;
-			for (const auto& summary : ListWorlds(a_snapshot)) {
-				worlds.push_back(summary.formID);
+			if (a_options.allWorlds) {
+				for (const auto& summary : available) {
+					worlds.push_back(summary.formID);
+				}
+				if (worlds.empty()) {
+					throw std::runtime_error("no worldspace has LAND records");
+				}
+				spdlog::info("{} worldspace(s) with LAND records", worlds.size());
+				return worlds;
 			}
-			if (worlds.empty()) {
-				throw std::runtime_error("no worldspace has LAND records");
+			// Checked before the first world runs, so a mistyped one does not stop the run halfway.
+			for (const auto world : a_options.worlds) {
+				if (std::ranges::find(available, world, &WorldSummary::formID) == available.end()) {
+					throw std::runtime_error(std::format("no LAND records were loaded for world {:08X}", world.value));
+				}
 			}
-			spdlog::info("{} worldspace(s) with LAND records", worlds.size());
-			return worlds;
+			if (a_options.worlds.size() > 1) {
+				spdlog::info("{} worldspace(s) selected", a_options.worlds.size());
+			}
+			return a_options.worlds;
 		}
 	}
 

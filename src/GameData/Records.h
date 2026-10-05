@@ -83,6 +83,8 @@ namespace FasterNGIO::GameData
 		float positionRange{ 128.0f };
 		float heightRange{ 0.0f };
 		float colorRange{ 0.0f };
+		// How fast the grass sways; the shader property takes it from the cache group.
+		float wavePeriod{ 0.0f };
 		std::uint8_t grassFlags{ 0 };
 		ObjectBounds bounds;
 

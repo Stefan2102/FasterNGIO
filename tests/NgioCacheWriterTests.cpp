@@ -28,6 +28,7 @@ TEST(NgioCacheWriter, SerializesGroupsLittleEndian)
 	Grass::NgioCellCache cache;
 	auto& group = cache.groups.emplace_back();
 	group.modelPath = "meshes\\grass\\a.nif";
+	group.wavePeriod = 10.0f;
 	group.grassFormID = 0x12345678;
 	group.fitToSlope = true;
 	auto& block = group.blocks.emplace_back();
@@ -35,12 +36,12 @@ TEST(NgioCacheWriter, SerializesGroupsLittleEndian)
 	block.payloadWords = { 0x0102, 0xFFEE };
 
 	const auto bytes = Grass::SerializeNgioCellCache(cache);
-	// Group count; path length, path and terminator; model data (0) and form ID; three flags; block
+	// Group count; path length, path and terminator; wave period and form ID; three flags; block
 	// count; nine descriptor words; the payload.
 	ASSERT_EQ(bytes.size(), 4u + 4u + group.modelPath.size() + 1u + 4u + 4u + 3u + 4u + 9u * 4u + 2u * 2u);
 	EXPECT_EQ(U32At(bytes, 0), 1u);
 	const auto afterPath = 8u + group.modelPath.size() + 1u;
-	EXPECT_EQ(U32At(bytes, afterPath), 0u);
+	EXPECT_EQ(U32At(bytes, afterPath), 0x41200000u);
 	EXPECT_EQ(U32At(bytes, afterPath + 4), 0x12345678u);
 	EXPECT_EQ(bytes[afterPath + 8], 0u);
 	EXPECT_EQ(bytes[afterPath + 10], 1u);

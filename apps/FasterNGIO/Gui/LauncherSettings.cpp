@@ -2,8 +2,11 @@
 
 #include "Platform/UserSettings.h"
 
+#include <algorithm>
 #include <charconv>
 #include <format>
+#include <ranges>
+#include <string_view>
 #include <system_error>
 
 namespace FasterNGIO::Gui
@@ -24,10 +27,15 @@ namespace FasterNGIO::Gui
 		}
 #endif
 		settings.overwrite = file.Get("overwrite") == "1";
-		if (const auto world = file.Get("world"); world && *world != "all") {
-			std::uint32_t value = 0;
-			if (std::from_chars(world->data(), world->data() + world->size(), value, 16).ec == std::errc{}) {
-				settings.world = value;
+		// "all", or comma-separated hex form IDs (one, from before the selector took several).
+		if (const auto worlds = file.Get("world"); worlds && *worlds != "all") {
+			settings.allWorlds = false;
+			for (const auto part : std::views::split(std::string_view(*worlds), ',')) {
+				std::uint32_t value = 0;
+				const std::string_view text(part.begin(), part.end());
+				if (std::from_chars(text.data(), text.data() + text.size(), value, 16).ec == std::errc{} && std::ranges::find(settings.worlds, value) == settings.worlds.end()) {
+					settings.worlds.push_back(value);
+				}
 			}
 		}
 		return settings;
@@ -43,7 +51,11 @@ namespace FasterNGIO::Gui
 		file.Set("placement", App::PlacementName(placement));
 		file.Set("rejection", App::RejectChoiceName(rejection));
 		file.Set("overwrite", overwrite ? "1" : "0");
-		file.Set("world", world ? std::format("{:08X}", *world) : std::string("all"));
+		std::string worldList;
+		for (const auto world : worlds) {
+			worldList += std::format("{}{:08X}", worldList.empty() ? "" : ",", world);
+		}
+		file.Set("world", allWorlds ? std::string("all") : worldList);
 		file.Save(a_path);
 	}
 }

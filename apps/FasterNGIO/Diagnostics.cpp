@@ -67,7 +67,7 @@ namespace FasterNGIO::App
 			std::unordered_map<std::string, std::uint64_t> referencesByModel;
 			std::uint64_t references = 0;
 			for (const auto& [key, placements] : snapshot.exteriorPlacementsByCell) {
-				if (key.worldFormID != a_options.worldFormID || !IsSelectedCell(a_options, key.x, key.y)) {
+				if (key.worldFormID != a_options.worlds.front() || !IsSelectedCell(a_options, key.x, key.y)) {
 					continue;
 				}
 				for (const auto& placement : placements) {
@@ -239,7 +239,7 @@ namespace FasterNGIO::App
 			const auto& snapshot = a_plugins.snapshot;
 			const auto shapes = MakeQueryShapes(snapshot, a_options.rejectionConfig);
 			const auto resolver = MakeResolver(a_options, a_plugins);
-			const auto world = BuildWorldIndex(snapshot, a_options.worldFormID, resolver, shapes.maxReach);
+			const auto world = BuildWorldIndex(snapshot, a_options.worlds.front(), resolver, shapes.maxReach);
 
 			struct Cell
 			{
@@ -402,8 +402,8 @@ namespace FasterNGIO::App
 			return CollisionSurvey(a_options, a_plugins);
 		}
 		// Export and benchmark place grass as generation would.
-		const auto lands = SelectLands(a_plugins.snapshot, a_options.worldFormID, a_options);
-		const auto placement = PrepareWorldPlacement(a_plugins.snapshot, a_options.worldFormID, ResolvePlacementSettings(a_options));
+		const auto lands = SelectLands(a_plugins.snapshot, a_options.worlds.front(), a_options);
+		const auto placement = PrepareWorldPlacement(a_plugins.snapshot, a_options.worlds.front(), ResolvePlacementSettings(a_options));
 		if (!a_options.exportBladesPath.empty()) {
 			return ExportBlades(a_options, placement.settings, a_plugins.snapshot, lands);
 		}

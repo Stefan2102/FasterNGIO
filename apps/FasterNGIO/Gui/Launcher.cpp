@@ -15,6 +15,7 @@
 #include <imgui_stdlib.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -269,9 +270,76 @@ namespace FasterNGIO::Gui
 				return std::format("{:08X}", a_formID);
 			}
 
+			// --- Worldspace selection -----------------------------------------------------------
+
+			[[nodiscard]] bool IsWorldSelected(std::uint32_t a_formID) const
+			{
+				return _inputs.allWorlds || std::ranges::find(_inputs.worlds, a_formID) != _inputs.worlds.end();
+			}
+
+			void SetWorldSelected(const Scan& a_scan, std::uint32_t a_formID, bool a_selected)
+			{
+				if (_inputs.allWorlds) {
+					// Leaving "all": every listed worldspace but this one.
+					_inputs.allWorlds = false;
+					_inputs.worlds.clear();
+					for (const auto& world : a_scan.worlds) {
+						_inputs.worlds.push_back(world.formID.value);
+					}
+				}
+				std::erase(_inputs.worlds, a_formID);
+				if (a_selected) {
+					_inputs.worlds.push_back(a_formID);
+				}
+			}
+
+			// The selected worldspaces this load order has, in form ID order (all of the saved ones
+			// until the plugins are read); empty when all are selected.
+			[[nodiscard]] std::vector<GameData::FormID> SelectedWorlds() const
+			{
+				std::vector<GameData::FormID> worlds;
+				if (_inputs.allWorlds) {
+					return worlds;
+				}
+				if (const auto* scan = FinishedScan()) {
+					for (const auto& world : scan->worlds) {
+						if (IsWorldSelected(world.formID.value)) {
+							worlds.push_back(world.formID);
+						}
+					}
+				} else {
+					for (const auto formID : _inputs.worlds) {
+						worlds.push_back(GameData::FormID{ formID });
+					}
+					std::ranges::sort(worlds, {}, &GameData::FormID::value);
+				}
+				return worlds;
+			}
+
+			[[nodiscard]] bool HasWorlds() const { return _inputs.allWorlds || !SelectedWorlds().empty(); }
+
+			[[nodiscard]] std::string WorldsPreview() const
+			{
+				if (_inputs.allWorlds) {
+					return "All worldspaces";
+				}
+				const auto worlds = SelectedWorlds();
+				if (worlds.empty()) {
+					return "No worldspace selected";
+				}
+				if (worlds.size() > 3) {
+					return std::format("{} worldspaces", worlds.size());
+				}
+				std::string preview;
+				for (const auto world : worlds) {
+					preview += (preview.empty() ? "" : ", ") + WorldName(world.value);
+				}
+				return preview;
+			}
+
 			// --- Running ------------------------------------------------------------------------
 
-			[[nodiscard]] bool CanGenerate() const { return !_run && _install && _pluginsFound && !OutputFolder().empty(); }
+			[[nodiscard]] bool CanGenerate() const { return !_run && _install && _pluginsFound && !OutputFolder().empty() && HasWorlds(); }
 
 			void StartRun()
 			{
@@ -280,9 +348,9 @@ namespace FasterNGIO::Gui
 				options.dataPath = _install->data;
 				options.pluginsTxtPath = PluginsTxt();
 				options.outputDirectory = OutputFolder();
-				options.allWorlds = !_inputs.world.has_value();
-				if (_inputs.world) {
-					options.worldFormID = GameData::FormID{ *_inputs.world };
+				options.allWorlds = _inputs.allWorlds;
+				if (!_inputs.allWorlds) {
+					options.worlds = SelectedWorlds();
 				}
 				options.placement.mode = _inputs.placement;
 				options.rejection = _inputs.rejection;
@@ -460,19 +528,21 @@ namespace FasterNGIO::Gui
 				ImGui::SameLine(labelWidth);
 				ImGui::SetNextItemWidth(fieldWidth);
 				const auto* scan = FinishedScan();
-				std::string preview = "All worldspaces";
-				if (_inputs.world) {
-					preview = WorldName(*_inputs.world);
-				}
-				if (ImGui::BeginCombo("##world", preview.c_str())) {
-					if (ImGui::Selectable("All worldspaces", !_inputs.world)) {
-						_inputs.world.reset();
+				if (ImGui::BeginCombo("##world", WorldsPreview().c_str(), ImGuiComboFlags_HeightLarge)) {
+					// Checkboxes, which leave the list open for the next one. "All" checks every box;
+					// unchecking one of them then leaves the rest.
+					bool all = _inputs.allWorlds;
+					if (ImGui::Checkbox("All worldspaces", &all)) {
+						_inputs.allWorlds = all;
+						_inputs.worlds.clear();
 					}
 					if (scan) {
+						ImGui::Separator();
 						for (const auto& world : scan->worlds) {
 							const auto label = std::format("{}  ({} cells)##{:08X}", world.editorID, world.cells, world.formID.value);
-							if (ImGui::Selectable(label.c_str(), _inputs.world == world.formID.value)) {
-								_inputs.world = world.formID.value;
+							bool selected = IsWorldSelected(world.formID.value);
+							if (ImGui::Checkbox(label.c_str(), &selected)) {
+								SetWorldSelected(*scan, world.formID.value, selected);
 							}
 						}
 					} else if (_scan && _scan->Failed()) {
@@ -601,7 +671,13 @@ namespace FasterNGIO::Gui
 					StatusLine(!_summaryIsError, _summary);
 				} else if (!CanGenerate()) {
 					ImGui::AlignTextToFramePadding();
-					ImGui::TextDisabled("%s", _install ? "The load order (plugins.txt) is needed to start." : "Choose a valid game folder to start.");
+					const char* reason = "Choose a valid game folder to start.";
+					if (_install && !_pluginsFound) {
+						reason = "The load order (plugins.txt) is needed to start.";
+					} else if (_install && !HasWorlds()) {
+						reason = "Choose at least one worldspace to start.";
+					}
+					ImGui::TextDisabled("%s", reason);
 				}
 				if (!_run && !_summary.empty() && IsDirectory(_ranOutput)) {
 					if (ImGui::Button("Open output folder", buttonSize)) {

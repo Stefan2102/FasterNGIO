@@ -1,5 +1,7 @@
 #include "Grass/NgioCacheWriter.h"
 
+#include <bit>
+
 namespace FasterNGIO::Grass
 {
 	namespace
@@ -35,8 +37,7 @@ namespace FasterNGIO::Grass
 			output.insert(output.end(), group.modelPath.begin(), group.modelPath.end());
 			output.push_back(0);
 
-			// The group's model-data word, which FasterNGIO does not fill: always 0.
-			AppendU32(output, 0);
+			AppendU32(output, std::bit_cast<std::uint32_t>(group.wavePeriod));
 			AppendU32(output, group.grassFormID);
 			output.push_back(group.vertexLighting ? 1 : 0);
 			output.push_back(group.uniformScaling ? 1 : 0);

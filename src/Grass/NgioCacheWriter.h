@@ -18,6 +18,8 @@ namespace FasterNGIO::Grass
 	struct NgioGrassGroup
 	{
 		std::string modelPath;
+		// The GRAS wave period, which drives the shader's wind animation; 0 freezes the grass.
+		float wavePeriod{ 0.0f };
 		std::uint32_t grassFormID{ 0 };
 		bool vertexLighting{ false };
 		bool uniformScaling{ false };

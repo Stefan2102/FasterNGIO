@@ -426,15 +426,20 @@ namespace FasterNGIO::Grass
 				basis1[2] = basis2[0] * basis0[1] - basis2[1] * basis0[0];
 			}
 
+			// The grass vertex shader reads words 4-15 as three float4s and rotates the model by
+			// float3x3(words 4-6, words 8-10, (word 12, word 7, word 11)): those are the matrix rows,
+			// so the basis vectors (where the model's x, y and up axes go) are its columns. The
+			// shader also takes (word 6, word 10, word 11) as the blade's up vector for lighting.
 			words[4] = FloatToHalfBits(basis0[0]);
-			words[5] = FloatToHalfBits(basis0[1]);
-			words[6] = FloatToHalfBits(basis0[2]);
-			words[7] = FloatToHalfBits(basis2[0]);
-			words[8] = FloatToHalfBits(basis1[0]);
+			words[5] = FloatToHalfBits(basis1[0]);
+			words[6] = FloatToHalfBits(basis2[0]);
+			words[7] = FloatToHalfBits(basis1[2]);
+			words[8] = FloatToHalfBits(basis0[1]);
 			words[9] = FloatToHalfBits(basis1[1]);
-			words[10] = FloatToHalfBits(basis1[2]);
-			words[11] = FloatToHalfBits(basis2[1]);
-			words[12] = FloatToHalfBits(basis2[2]);
+			words[10] = FloatToHalfBits(basis2[1]);
+			words[11] = FloatToHalfBits(basis2[2]);
+			words[12] = FloatToHalfBits(basis0[2]);
+			// The shader scales the model by 1 + this (in the GRAS record's scaled axes).
 			words[13] = FloatToHalfBits(a_heightRandom * a_grass.heightRange);
 			words[14] = 0;
 			words[15] = 0;

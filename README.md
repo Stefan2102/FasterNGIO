@@ -15,8 +15,9 @@ a window with the game, load order and INIs already filled in. On the command li
 `--plugins` and `--out` become optional: they default to the instance's game, the profile's
 `plugins.txt` and `Data\Grass`. As with NGIO's own pregeneration, new files then land in MO2's
 Overwrite folder, or in the mod chosen in the executable's "Create files in mod" setting. Use
-`--help` for the placement and NGIO `[RayCastConfig]` options. `--world all` generates every
-worldspace with terrain, as NGIO's own pregeneration does. Without Mod Organizer 2, run it without
+`--help` for the placement and NGIO `[RayCastConfig]` options. `--world` takes one or more form IDs
+(`--world 0x3C,0x16BB4` for Tamriel and Riften); `--world all` generates every worldspace with
+terrain, as NGIO's own pregeneration does. Without Mod Organizer 2, run it without
 arguments to get the same window (see below). On Linux it runs natively (no Proton): Data paths are
 resolved case-insensitively as the game does, and `--plugins` defaults to the Steam Proton prefix's
 `plugins.txt`. The Linux build needs only glibc and, for GPU rejection, a Vulkan driver with ray tracing and
@@ -58,7 +59,8 @@ Run `FasterNGIO` without arguments (double-click it) and a window opens instead:
    can choose another `plugins.txt` or game INI folder.
 2. Leave the output empty to write to `Data\Grass`, where NGIO and DynDOLOD read the cache, or choose
    another folder (a mod manager's mod folder, for example).
-3. Click Generate. By default every worldspace is generated.
+3. Click Generate. By default every worldspace is generated; the Worldspaces list can narrow that to
+   any subset.
 
 This is how Vortex users (whose mods are deployed into the real Data folder) and manual installs run
 it. The window remembers its settings in `%LOCALAPPDATA%\FasterNGIO` (`~/.config/fasterngio` on

@@ -55,6 +55,7 @@ namespace FasterNGIO::Grass
 			NgioGrassGroup group;
 			group.modelPath = source.modelPath;
 			group.grassFormID = source.grass->formID.value;
+			group.wavePeriod = source.grass->wavePeriod;
 			group.vertexLighting = source.grass->HasVertexLighting();
 			group.uniformScaling = source.grass->HasUniformScaling();
 			group.fitToSlope = source.grass->FitsToSlope();

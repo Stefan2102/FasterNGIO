@@ -74,10 +74,12 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
 ## Load-bearing rules
 
 - **Parity.** With `--placement vanilla --reject none`, output reproduces the engine and must not
-  drift. It matches SARP's `SARPGrassCacheGenerator --paint vanilla` byte for byte except where a land
-  texture carries more grass types than `iMaxGrassTypesPerTexure`: the engine tests `count > max`
+  drift. It places the same blades as SARP's `SARPGrassCacheGenerator --paint vanilla` except where a
+  land texture carries more grass types than `iMaxGrassTypesPerTexure`: the engine tests `count > max`
   before taking each one (so the default of 2 takes 3; confirmed in the disassembly), SARP stops at
-  `max`. Vanilla changes must preserve the engine's RNG draw order. Linux output (both placements)
+  `max`. The bytes differ in each blade's rotation words: SARP's layout suited its own renderer, while
+  FasterNGIO writes the one the game's grass vertex shader reads (`EncodeBlade`; tested in
+  `PlacementTests`' `BladeEncoding`). Vanilla changes must preserve the engine's RNG draw order. Linux output (both placements)
   must stay byte-identical to Windows output.
 - **Game settings.** Only settings that change placement are read: `iMinGrassSize`,
   `iMaxGrassTypesPerTexure`, `fTexturePctThreshold`, all in the engine's Skyrim.ini collection, which

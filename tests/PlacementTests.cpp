@@ -1,8 +1,10 @@
 #include "Grass/Placement.h"
+#include "Grass/Internal/PlacementCommon.h"
 #include "Grass/SmoothPlacement.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 
 namespace
@@ -168,4 +170,59 @@ TEST(SmoothPlacement, DensityMatchCompensatesVanillasDoublePlacementInBlends)
 	const std::vector<LandInfo> lands{ world.land };
 	const Grass::SmoothWeightField field(world.snapshot, lands, settings);
 	EXPECT_NEAR(field.DensityScale(FormID{ 0x100 }), 2.0f, 0.05f);
+}
+
+namespace
+{
+	// The instance rotation as the game's grass vertex shader builds it from a blade's words:
+	// float3x3(words 4-6, words 8-10, (word 12, word 7, word 11)), rows first.
+	std::array<std::array<float, 3>, 3> InstanceMatrix(const Grass::BladeCandidate& a_blade)
+	{
+		const auto h = [&](std::size_t a_word) { return Grass::Internal::HalfBitsToFloat(a_blade.words[a_word]); };
+		return { { { h(4), h(5), h(6) }, { h(8), h(9), h(10) }, { h(12), h(7), h(11) } } };
+	}
+
+	void ExpectRotationWithUp(const Grass::BladeCandidate& a_blade, const std::array<float, 3>& a_up)
+	{
+		const auto m = InstanceMatrix(a_blade);
+		constexpr float kHalfError = 2.0e-3f;
+		for (int row = 0; row < 3; ++row) {
+			// The model's up axis goes to a_up: the matrix's third column.
+			EXPECT_NEAR(m[row][2], a_up[row], kHalfError) << "row " << row;
+			for (int other = 0; other < 3; ++other) {
+				const float dot = m[row][0] * m[other][0] + m[row][1] * m[other][1] + m[row][2] * m[other][2];
+				EXPECT_NEAR(dot, row == other ? 1.0f : 0.0f, kHalfError) << "rows " << row << ", " << other;
+			}
+		}
+		const float det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+		                  m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+		EXPECT_NEAR(det, 1.0f, kHalfError);
+	}
+}
+
+TEST(BladeEncoding, StandsUprightInTheGamesInstanceLayout)
+{
+	auto grass = MakeGrass(0x100, 50);
+	Grass::Internal::TerrainSample terrain;
+	terrain.normal[0] = 0.6f;
+	terrain.normal[2] = 0.8f;
+	for (const float orientation : { -0.9f, 0.0f, 0.4f }) {
+		Grass::BladeCandidate blade;
+		Grass::Internal::EncodeBlade(blade, 0, 0, 100.0f, 200.0f, terrain, grass, 0.5f, orientation, 0.0f);
+		ExpectRotationWithUp(blade, { 0.0f, 0.0f, 1.0f });
+	}
+}
+
+TEST(BladeEncoding, FitToSlopeStandsOnTheTerrainNormal)
+{
+	auto grass = MakeGrass(0x100, 50);
+	grass.grassFlags = 0x4;
+	Grass::Internal::TerrainSample terrain;
+	terrain.normal[0] = 0.6f;
+	terrain.normal[2] = 0.8f;
+	for (const float orientation : { -0.9f, 0.0f, 0.4f }) {
+		Grass::BladeCandidate blade;
+		Grass::Internal::EncodeBlade(blade, 0, 0, 100.0f, 200.0f, terrain, grass, 0.5f, orientation, 0.0f);
+		ExpectRotationWithUp(blade, { 0.6f, 0.0f, 0.8f });
+	}
 }

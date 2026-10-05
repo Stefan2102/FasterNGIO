@@ -37,7 +37,7 @@ TEST(CommandLine, ParsesTheOptions)
 	const auto options = Parse({ "--data", game.data, "--out", "out", "--plugins", "p.txt", "--world", "0x16BB4", "--radius", "5", "-3", "4", "--placement",
 		"vanilla", "--reject", "cpu", "--ray-height", "120.5", "--writers", "0" });
 	ASSERT_TRUE(options.has_value());
-	EXPECT_EQ(options->worldFormID, GameData::FormID{ 0x16BB4 });
+	EXPECT_EQ(options->worlds, std::vector{ GameData::FormID{ 0x16BB4 } });
 	EXPECT_EQ(options->centerCellX, 5);
 	EXPECT_EQ(options->centerCellY, -3);
 	EXPECT_EQ(options->radius, 4);
@@ -78,6 +78,9 @@ TEST(CommandLine, RejectsInvalidArguments)
 	rejects({ "--ray-depth", "5cm" });
 	rejects({ "--cell", "1", "2", "--radius", "1", "2", "3" });
 	rejects({ "--world", "all", "--cell", "1", "2" });
+	rejects({ "--world", "0x3C,0x16BB4", "--radius", "1", "2", "3" });
+	rejects({ "--world", "0x3C,0x16BB4", "--benchmark-rejection" });
+	rejects({ "--world", "0x3C," });
 	rejects({ "--collision-survey", "--benchmark-rejection" });
 	rejects({ "--validate-cpu", "--reject", "none" });
 	rejects({ "--ray-mode", "2" });
@@ -97,5 +100,19 @@ TEST(CommandLine, ReadsNumbersAsDecimalUnlessHex)
 	const auto options = Parse({ "--data", game.data, "--out", "out", "--threads", "010", "--world", "0X3c" });
 	ASSERT_TRUE(options.has_value());
 	EXPECT_EQ(options->threads, 10u);
-	EXPECT_EQ(options->worldFormID, GameData::FormID{ 0x3C });
+	EXPECT_EQ(options->worlds, std::vector{ GameData::FormID{ 0x3C } });
+}
+
+TEST(CommandLine, TakesSeveralWorldspaces)
+{
+	const Game game;
+	const auto options = Parse({ "--data", game.data, "--out", "out", "--world", "0x16BB4,60,0x16bb4" });
+	ASSERT_TRUE(options.has_value());
+	// In the order given, without repeats.
+	EXPECT_EQ(options->worlds, (std::vector{ GameData::FormID{ 0x16BB4 }, GameData::FormID{ 0x3C } }));
+	EXPECT_FALSE(options->allWorlds);
+
+	const auto all = Parse({ "--data", game.data, "--out", "out", "--world", "all" });
+	ASSERT_TRUE(all.has_value());
+	EXPECT_TRUE(all->allWorlds);
 }

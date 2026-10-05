@@ -293,6 +293,7 @@ namespace FasterNGIO::GameData::Internal
 				info.positionRange = ReadLE<float>(payload, 0x0C);
 				info.heightRange = ReadLE<float>(payload, 0x10);
 				info.colorRange = ReadLE<float>(payload, 0x14);
+				info.wavePeriod = ReadLE<float>(payload, 0x18);
 				info.grassFlags = ReadLE<std::uint8_t>(payload, 0x1C);
 			}
 		}

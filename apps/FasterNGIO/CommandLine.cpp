@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -80,8 +81,8 @@ namespace FasterNGIO::App
 #else
 			"  --plugins <plugins.txt>       Defaults to Skyrim's plugins.txt in the Steam Proton prefix\n"
 #endif
-			"  --world <form-id|all>         Worldspace form ID, default 0x3C (Tamriel); all: every worldspace\n"
-			"                                with LAND records, as NGIO's pregeneration does\n"
+			"  --world <form-ids|all>        Worldspace form IDs, comma-separated; default 0x3C (Tamriel); all:\n"
+			"                                every worldspace with LAND records, as NGIO's pregeneration does\n"
 			"  --cell <x> <y>                Write one cell\n"
 			"  --radius <x> <y> <r>          Write cells within a square cell radius\n"
 			"  --max-grass-types <n>         iMaxGrassTypesPerTexure (the engine takes n + 1 per LTEX), default 2\n"
@@ -154,7 +155,13 @@ namespace FasterNGIO::App
 					options.allWorlds = true;
 				} else {
 					options.allWorlds = false;
-					options.worldFormID = GameData::FormID{ ParseU32(value) };
+					options.worlds.clear();
+					for (const auto part : std::views::split(std::string_view(value), ',')) {
+						const GameData::FormID world{ ParseU32(std::string_view(part.begin(), part.end())) };
+						if (std::ranges::find(options.worlds, world) == options.worlds.end()) {
+							options.worlds.push_back(world);
+						}
+					}
 				}
 			} else if (arg == "--cell") {
 				options.singleCellX = ParseI32(requireValue(arg));
@@ -281,12 +288,12 @@ namespace FasterNGIO::App
 		if (options.validateCpu && options.rejection == RejectChoice::None) {
 			throw std::invalid_argument("--validate-cpu compares rejection results; it needs --reject auto, gpu or cpu");
 		}
-		if (options.allWorlds) {
+		if (options.allWorlds || options.worlds.size() != 1) {
 			if (options.singleCellX || options.radius) {
-				throw std::invalid_argument("--cell and --radius need one worldspace, not --world all");
+				throw std::invalid_argument("--cell and --radius need one worldspace");
 			}
 			if (diagnostics != 0) {
-				throw std::invalid_argument("the diagnostics need one worldspace, not --world all");
+				throw std::invalid_argument("the diagnostics need one worldspace");
 			}
 		}
 

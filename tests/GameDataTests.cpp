@@ -76,11 +76,11 @@ namespace
 		return value;
 	}
 
-	// GRAS DATA: density, slopes, water distance and ranges (32 bytes).
+	// GRAS DATA: density, slopes, water distance, ranges, wave period and flags (32 bytes).
 	[[nodiscard]] std::vector<std::uint8_t> GrassData(std::uint8_t a_density)
 	{
 		PluginWriter data;
-		data.U8(a_density).U8(0).U8(90).U8(0).U16(0).U16(0).U32(0).F32(32.0f).F32(16.0f).F32(0.5f).F32(0.0f).U8(0x4).U8(0).U16(0);
+		data.U8(a_density).U8(0).U8(90).U8(0).U16(0).U16(0).U32(0).F32(32.0f).F32(16.0f).F32(0.5f).F32(12.0f).U8(0x4).U8(0).U16(0);
 		return data.Data();
 	}
 
@@ -243,6 +243,7 @@ TEST(GameData, ResolvesOverridesDeletionsAndCompressedRecords)
 	EXPECT_EQ(grass.modelPath, "Grass\\Patched.nif");
 	EXPECT_EQ(grass.density, 80u);
 	EXPECT_FLOAT_EQ(grass.positionRange, 32.0f);
+	EXPECT_FLOAT_EQ(grass.wavePeriod, 12.0f);
 	EXPECT_TRUE(grass.FitsToSlope());
 	// A compressed record, and a subrecord whose size comes from XXXX.
 	ASSERT_TRUE(snapshot.grassesByFormID.contains(FormID{ 0x000802 }));

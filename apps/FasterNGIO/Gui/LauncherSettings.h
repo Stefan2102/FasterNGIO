@@ -4,8 +4,8 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <optional>
 #include <string>
+#include <vector>
 
 namespace FasterNGIO::Gui
 {
@@ -17,8 +17,10 @@ namespace FasterNGIO::Gui
 		std::string outputFolder;
 		std::string pluginsTxt;
 		std::string gameIniFolder;
-		// Nullopt for every worldspace.
-		std::optional<std::uint32_t> world;
+		// Every worldspace, or the form IDs in worlds (which may be empty, or name worldspaces another
+		// load order has; the launcher only runs the ones the current load order has).
+		bool allWorlds{ true };
+		std::vector<std::uint32_t> worlds;
 		Grass::PlacementMode placement{ Grass::PlacementMode::Smooth };
 		App::RejectChoice rejection{ App::RejectChoice::Auto };
 		bool overwrite{ false };

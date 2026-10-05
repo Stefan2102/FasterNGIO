@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // What a run generates, as the command line (Main.cpp) and the launcher (Gui/) both describe it.
 namespace FasterNGIO::App
@@ -28,8 +29,10 @@ namespace FasterNGIO::App
 		std::filesystem::path dataPath;
 		std::filesystem::path pluginsTxtPath;
 		std::filesystem::path outputDirectory;
-		GameData::FormID worldFormID{ 0x0000003Cu };
-		// Every worldspace with LAND records, one after another, instead of worldFormID.
+		// The worldspaces to generate, one after another, without repeats; never empty. The
+		// diagnostics and --cell/--radius take exactly one.
+		std::vector<GameData::FormID> worlds{ GameData::FormID{ 0x0000003Cu } };
+		// Every worldspace with LAND records instead of worlds.
 		bool allWorlds{ false };
 		std::optional<std::int32_t> singleCellX;
 		std::optional<std::int32_t> singleCellY;
