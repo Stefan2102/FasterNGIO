@@ -66,6 +66,8 @@ namespace FasterNGIO::App
 			Pipeline::FileWriterPool& writer;
 			// Seasons of Skyrim's seasons that get their own caches (none without Seasons).
 			const ResolvedSeasons& seasons;
+			// The caches in the output folder when the run started (see ListExistingCaches).
+			const std::unordered_set<std::string>* existingFiles{ nullptr };
 			// Opened for the first world with rejection, then shared (read-only).
 			std::optional<Archives::ArchiveResolver> resolver{};
 			// Set when the GPU turned out to be unsupported, so later worlds go straight to the CPU BVH.
@@ -153,8 +155,8 @@ namespace FasterNGIO::App
 			if (a_shared.options.validateCpu) {
 				spdlog::info("validation: {} blade(s) differ from the brute-force CPU reference", a_stats.validationMismatches);
 			}
-			spdlog::info("generated {} file(s), skipped {}, failed {}, blades={} rejected={}{} in {:.2f}s (total {:.2f}s, {} file(s) still queued)", a_stats.cellsWritten,
-				a_stats.cellsSkipped, a_stats.cellsFailed, a_stats.blades, a_stats.bladesRejected,
+			spdlog::info("generated {} file(s), skipped {}, empty {}, failed {}, blades={} rejected={}{} in {:.2f}s (total {:.2f}s, {} file(s) still queued)", a_stats.cellsWritten,
+				a_stats.cellsSkipped, a_stats.cellsEmpty, a_stats.cellsFailed, a_stats.blades, a_stats.bladesRejected,
 				a_stats.bladesMoved ? std::format(" moved onto cliffs={}", a_stats.bladesMoved) : std::string{}, SecondsSince(a_generationBegin), SecondsSince(a_shared.begin),
 				a_shared.writer.PendingFiles());
 		}
@@ -166,10 +168,29 @@ namespace FasterNGIO::App
 			std::shared_ptr<Pipeline::WriteTally> tally{};
 		};
 
+		// The .cgid names (lower case) already in a_directory. An empty cell removes its stale caches
+		// when overwriting; one listing spares a remove call per empty cell and name, which the
+		// filesystem (and MO2's VFS) charges even for files that are not there.
+		std::unordered_set<std::string> ListExistingCaches(const std::filesystem::path& a_directory)
+		{
+			const auto listBegin = std::chrono::steady_clock::now();
+			std::unordered_set<std::string> names;
+			std::error_code error;
+			for (std::filesystem::directory_iterator it(a_directory, error), end; !error && it != end; it.increment(error)) {
+				auto name = Platform::LowerAscii(it->path().filename().string());
+				if (name.ends_with(".cgid")) {
+					names.insert(std::move(name));
+				}
+			}
+			spdlog::info("output folder: {} existing cache file(s) ({:.2f}s)", names.size(), SecondsSince(listBegin));
+			return names;
+		}
+
 		void Accumulate(Pipeline::CellPipelineStats& a_total, const Pipeline::CellPipelineStats& a_pass)
 		{
 			a_total.cellsWritten += a_pass.cellsWritten;
 			a_total.cellsSkipped += a_pass.cellsSkipped;
+			a_total.cellsEmpty += a_pass.cellsEmpty;
 			a_total.cellsFailed += a_pass.cellsFailed;
 			a_total.cellsCancelled += a_pass.cellsCancelled;
 			a_total.blades += a_pass.blades;
@@ -259,6 +280,8 @@ namespace FasterNGIO::App
 				pipeline.fileSuffixes = pass.suffixes;
 				pipeline.placement = placement.settings;
 				pipeline.overwrite = options.overwrite;
+				pipeline.skipEmpty = options.skipEmptyCells;
+				pipeline.existingFiles = a_shared.existingFiles;
 				pipeline.shapesByGrass = &a_shared.shapes.byGrass;
 				pipeline.backend = rejection->backend;
 				pipeline.world = rejection->index.get();
@@ -425,6 +448,10 @@ namespace FasterNGIO::App
 			const auto placement = ResolvePlacementSettings(options);
 			const auto shapes = MakeQueryShapes(plugins.snapshot, options.rejectionConfig);
 			writer.emplace(options.writerThreads, kMaxPendingWriteBytes);
+			std::optional<std::unordered_set<std::string>> existingFiles;
+			if (options.skipEmptyCells && options.overwrite) {
+				existingFiles.emplace(ListExistingCaches(options.outputDirectory));
+			}
 			RunShared shared{
 				.options = options,
 				.control = a_control,
@@ -434,6 +461,7 @@ namespace FasterNGIO::App
 				.begin = begin,
 				.writer = *writer,
 				.seasons = seasons,
+				.existingFiles = existingFiles ? std::addressof(*existingFiles) : nullptr,
 			};
 			if (a_control.progress) {
 				a_control.progress->worldCount.store(static_cast<std::uint32_t>(worlds.size()), std::memory_order_relaxed);
@@ -448,6 +476,7 @@ namespace FasterNGIO::App
 				++result.worlds;
 				tallies.push_back(world.tally);
 				result.cellsSkipped += world.stats.cellsSkipped;
+				result.cellsEmpty += world.stats.cellsEmpty;
 				result.cellsFailed += world.stats.cellsFailed;
 				blades += world.stats.blades;
 				rejected += world.stats.bladesRejected;
@@ -474,8 +503,8 @@ namespace FasterNGIO::App
 			if (result.cancelled) {
 				spdlog::warn("cancelled after {} worldspace(s): wrote {} file(s)", result.worlds, result.cellsWritten);
 			} else {
-				spdlog::info("{}wrote {} file(s), skipped {}, failed {}, blades={} rejected={} in {:.2f}s",
-					result.worlds > 1 ? std::format("all {} worldspace(s): ", result.worlds) : std::string{}, result.cellsWritten, result.cellsSkipped, result.cellsFailed,
+				spdlog::info("{}wrote {} file(s), skipped {}, empty {}, failed {}, blades={} rejected={} in {:.2f}s",
+					result.worlds > 1 ? std::format("all {} worldspace(s): ", result.worlds) : std::string{}, result.cellsWritten, result.cellsSkipped, result.cellsEmpty, result.cellsFailed,
 					blades, rejected, SecondsSince(begin));
 			}
 		}

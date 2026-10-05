@@ -60,6 +60,8 @@ namespace FasterNGIO::App
 		std::uint32_t worlds{ 0 };
 		std::uint64_t cellsWritten{ 0 };
 		std::uint64_t cellsSkipped{ 0 };
+		// Cells with no grass, left without a file.
+		std::uint64_t cellsEmpty{ 0 };
 		std::uint64_t cellsFailed{ 0 };
 	};
 

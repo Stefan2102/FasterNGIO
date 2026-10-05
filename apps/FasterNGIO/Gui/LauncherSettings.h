@@ -24,6 +24,8 @@ namespace FasterNGIO::Gui
 		Grass::PlacementMode placement{ Grass::PlacementMode::Smooth };
 		App::RejectChoice rejection{ App::RejectChoice::Auto };
 		bool overwrite{ false };
+		// GenerateOptions::skipEmptyCells.
+		bool skipEmptyCells{ true };
 		// Experimental: GenerateOptions::renderGeometry.
 		bool renderGeometry{ false };
 		App::SeasonsChoice seasons{ App::SeasonsChoice::Auto };

@@ -58,7 +58,7 @@ TEST(CellPipeline, WritesEveryCellInline)
 	EXPECT_EQ(stats.cellsWritten, 3u);
 	EXPECT_EQ(stats.cellsFailed, 0u);
 	EXPECT_EQ(progress.load(), 3u);
-	// An empty cell still gets its 4-byte file: NGIO treats a missing file differently.
+	// Unless skipEmpty is set, an empty cell gets its 4-byte file.
 	for (const auto* name : { "Testx0000y-001.cgid", "Testx0001y-001.cgid", "Testx0002y-001.cgid" }) {
 		EXPECT_EQ(Tests::ReadAll(world.output.Path() / name), (std::vector<std::uint8_t>{ 0, 0, 0, 0 })) << name;
 	}
@@ -87,6 +87,24 @@ TEST(CellPipeline, WritesEachCellUnderEveryName)
 	EXPECT_EQ(again.cellsSkipped, 0u);
 	desc.fileSuffixes = { "", "SPR" };
 	EXPECT_EQ(Pipeline::RunCellPipeline(desc).cellsSkipped, 3u);
+}
+
+TEST(CellPipeline, SkipsEmptyCells)
+{
+	EmptyWorld world;
+	auto desc = world.Desc();
+	desc.skipEmpty = true;
+	const auto stats = Pipeline::RunCellPipeline(desc);
+	EXPECT_EQ(stats.cellsEmpty, 3u);
+	EXPECT_EQ(stats.cellsWritten, 0u);
+	EXPECT_TRUE(std::filesystem::is_empty(world.output.Path()));
+
+	// Without overwriting, an existing cache is kept; with it, a now-empty cell's old file goes.
+	EXPECT_EQ(Pipeline::RunCellPipeline(world.Desc()).cellsWritten, 3u);
+	EXPECT_EQ(Pipeline::RunCellPipeline(desc).cellsSkipped, 3u);
+	desc.overwrite = true;
+	EXPECT_EQ(Pipeline::RunCellPipeline(desc).cellsEmpty, 3u);
+	EXPECT_TRUE(std::filesystem::is_empty(world.output.Path()));
 }
 
 TEST(CellPipeline, HandsFilesToTheWriter)

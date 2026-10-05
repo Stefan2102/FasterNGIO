@@ -412,6 +412,7 @@ namespace FasterNGIO::Gui
 				options.rejection = _inputs.rejection;
 				options.rejectionChosen = true;
 				options.overwrite = _inputs.overwrite;
+				options.skipEmptyCells = _inputs.skipEmptyCells;
 				options.renderGeometry = _inputs.renderGeometry;
 				options.seasons = _inputs.seasons;
 				options.gameIniDirectory = IniFolder();
@@ -450,8 +451,9 @@ namespace FasterNGIO::Gui
 						_summary = std::format("Cancelled after {}: wrote {} cache file(s).", elapsed, result.cellsWritten);
 						_summaryIsError = true;
 					} else {
-						_summary = std::format("Done in {}: wrote {} cache file(s) for {} worldspace(s){}{}.", elapsed, result.cellsWritten, result.worlds,
+						_summary = std::format("Done in {}: wrote {} cache file(s) for {} worldspace(s){}{}{}.", elapsed, result.cellsWritten, result.worlds,
 							result.cellsSkipped ? std::format(", kept {} existing", result.cellsSkipped) : std::string{},
+							result.cellsEmpty ? std::format(", skipped {} empty", result.cellsEmpty) : std::string{},
 							result.cellsFailed ? std::format(", {} failed (see the log)", result.cellsFailed) : std::string{});
 						_summaryIsError = result.cellsFailed != 0;
 					}
@@ -718,6 +720,10 @@ namespace FasterNGIO::Gui
 					ImGui::TextUnformatted("Game INI folder (Skyrim.ini's [Grass] settings):");
 					const auto iniHint = _install ? Utf8(_install->iniDirectory) : std::string("derived from the game folder");
 					FolderField("##ini", _inputs.gameIniFolder, iniHint.c_str(), "Choose the folder with Skyrim.ini");
+					ImGui::Checkbox("Skip writing empty cache files", &_inputs.skipEmptyCells);
+					if (ImGui::IsItemHovered()) {
+						ImGui::SetTooltip("Cells left with no grass get no .cgid file instead of a 4-byte empty one.");
+					}
 					ImGui::TreePop();
 				}
 			}

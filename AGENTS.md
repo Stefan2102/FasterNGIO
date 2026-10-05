@@ -141,8 +141,10 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   `--writers`) writes every `.cgid`, one call per file; workers only serialize and queue, and suspend
   in the graph while the backlog is over budget. File creation is serialized by NTFS and antivirus
   scanning (about 150-300 us per file here, whatever the thread count), so it bounds a full run; a
-  world's pipeline returns once its files are queued so the next world prepares meanwhile. Empty
-  cells still get their 4-byte file: NGIO treats a missing file differently.
+  world's pipeline returns once its files are queued so the next world prepares meanwhile. A cell
+  left with no grass gets no file by default (`skipEmptyCells`; `--write-empty-cells` and the
+  launcher's advanced checkbox restore NGIO's 4-byte one); with `--overwrite`, its old file is removed
+  (only names the output folder listed at the start, since a remove call costs as much as a write).
 - **No locks on the hot paths.** Workers and the render thread communicate through the AsyncStateGraph
   (producers, GPU submission tokens, capacity suspensions) and `Pipeline::MpscQueue`. The CPU BVH,
   `SmoothWeightField` and `DataDirectory` are built up front and immutable afterwards. Do not add mutexes or condition variables to the

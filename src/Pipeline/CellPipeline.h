@@ -13,6 +13,7 @@
 #include <stop_token>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace FasterNGIO::Gpu
@@ -58,6 +59,12 @@ namespace FasterNGIO::Pipeline
 		std::vector<std::string> fileSuffixes{ std::string{} };
 		Grass::PlacementSettings placement;
 		bool overwrite{ false };
+		// A cell left with no grass gets no file (with overwrite, an existing one is removed) instead of
+		// NGIO's 4-byte empty cache.
+		bool skipEmpty{ false };
+		// The .cgid names (lower case) in outputDirectory when the run started: an empty cell removes
+		// only these, rather than trying every name. Null: every name is tried.
+		const std::unordered_set<std::string>* existingFiles{ nullptr };
 		const std::unordered_map<GameData::FormID, Rejection::QueryShape, GameData::FormIDHash>* shapesByGrass{ nullptr };
 		RejectionBackend backend{ RejectionBackend::None };
 		const Rejection::WorldIndex* world{ nullptr };
@@ -88,6 +95,8 @@ namespace FasterNGIO::Pipeline
 		// Written, or handed to the writer (whose WriteTally has the outcome).
 		std::uint64_t cellsWritten{ 0 };
 		std::uint64_t cellsSkipped{ 0 };
+		// Cells with no grass whose files were not written (skipEmpty).
+		std::uint64_t cellsEmpty{ 0 };
 		std::uint64_t cellsFailed{ 0 };
 		std::uint64_t cellsCancelled{ 0 };
 		std::uint64_t blades{ 0 };

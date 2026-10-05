@@ -81,6 +81,8 @@ namespace FasterNGIO::App
 		// Threads that only write cache files (see Pipeline::FileWriterPool).
 		std::uint32_t writerThreads{ 1 };
 		bool overwrite{ false };
+		// Cells with no grass get no cache file (--write-empty-cells writes NGIO's 4-byte one).
+		bool skipEmptyCells{ true };
 		RejectChoice rejection{ RejectChoice::Auto };
 		// --reject (or the launcher) chose it, so NGIO's Ray-cast-enabled does not.
 		bool rejectionChosen{ false };

@@ -27,6 +27,7 @@ namespace FasterNGIO::Gui
 		}
 #endif
 		settings.overwrite = file.Get("overwrite") == "1";
+		settings.skipEmptyCells = file.Get("skip_empty_cells") != "0";
 		settings.renderGeometry = file.Get("render_geometry") == "1";
 		if (const auto seasons = file.Get("seasons")) {
 			settings.seasons = *seasons == "on" ? App::SeasonsChoice::On : *seasons == "off" ? App::SeasonsChoice::Off : App::SeasonsChoice::Auto;
@@ -55,6 +56,7 @@ namespace FasterNGIO::Gui
 		file.Set("placement", App::PlacementName(placement));
 		file.Set("rejection", App::RejectChoiceName(rejection));
 		file.Set("overwrite", overwrite ? "1" : "0");
+		file.Set("skip_empty_cells", skipEmptyCells ? "1" : "0");
 		file.Set("render_geometry", renderGeometry ? "1" : "0");
 		file.Set("seasons", seasons == App::SeasonsChoice::On ? "on" : seasons == App::SeasonsChoice::Off ? "off" : "auto");
 		std::string worldList;

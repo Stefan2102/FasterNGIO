@@ -6,6 +6,7 @@
 #include "Pipeline/FileWriterPool.h"
 #include "Pipeline/SuspensionWaiters.h"
 #include "Pipeline/TbbGraphScheduler.h"
+#include "Platform/Text.h"
 #include "Platform/WholeFile.h"
 #include "Rejection/CpuBvh.h"
 #include "Rejection/CpuReference.h"
@@ -24,6 +25,7 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <system_error>
 
 namespace FasterNGIO::Pipeline
 {
@@ -188,6 +190,7 @@ namespace FasterNGIO::Pipeline
 				CellPipelineStats stats;
 				stats.cellsWritten = _written.load();
 				stats.cellsSkipped = _skipped.load();
+				stats.cellsEmpty = _empty.load();
 				stats.cellsFailed = _failed.load();
 				stats.cellsCancelled = _cancelled.load();
 				stats.blades = _blades.load();
@@ -448,8 +451,24 @@ namespace FasterNGIO::Pipeline
 					ApplyGrassFilters(work);
 					_rejected.fetch_add(CountBits(work.rejected));
 					_blades.fetch_add(work.candidates.blades.size());
-					auto bytes = Grass::SerializeNgioCellCache(Grass::FinalizeCell(work.candidates, work.rejected));
+					const auto cache = Grass::FinalizeCell(work.candidates, work.rejected);
 					const auto names = _desc.fileSuffixes.size();
+					if (_desc.skipEmpty && cache.groups.empty()) {
+						// A cache left from an earlier run would otherwise still place grass here.
+						if (_desc.overwrite) {
+							for (std::size_t name = 0; name < names; ++name) {
+								const auto path = CellPath(a_input.cell, name);
+								if (!_desc.existingFiles || _desc.existingFiles->contains(Platform::LowerAscii(path.filename().string()))) {
+									std::error_code error;
+									std::filesystem::remove(path, error);
+								}
+							}
+						}
+						_empty.fetch_add(1);
+						Finish(work);
+						return done;
+					}
+					auto bytes = Grass::SerializeNgioCellCache(cache);
 					for (std::size_t name = 0; name < names; ++name) {
 						if (_desc.writer) {
 							_desc.writer->Submit(CellPath(a_input.cell, name), name + 1 == names ? std::move(bytes) : bytes, _desc.writeTally);
@@ -638,6 +657,7 @@ namespace FasterNGIO::Pipeline
 			std::atomic<std::uint32_t> _finished{ 0 };
 			std::atomic<std::uint64_t> _written{ 0 };
 			std::atomic<std::uint64_t> _skipped{ 0 };
+			std::atomic<std::uint64_t> _empty{ 0 };
 			std::atomic<std::uint64_t> _failed{ 0 };
 			std::atomic<std::uint64_t> _cancelled{ 0 };
 			std::atomic<std::uint64_t> _blades{ 0 };
