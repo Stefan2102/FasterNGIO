@@ -4,6 +4,7 @@
 #include "Gpu/GpuApi.h"
 #include "Grass/Placement.h"
 #include "Rejection/RejectionConfig.h"
+#include "Rejection/RejectionFeatures.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -22,6 +23,16 @@ namespace FasterNGIO::App
 		Gpu,
 		Cpu,
 		None
+	};
+
+	// The ray-cast settings the command line gave; they win over GrassControl.ini.
+	struct RejectionOverrides
+	{
+		std::optional<float> rayHeight;
+		std::optional<float> rayDepth;
+		std::optional<Rejection::QueryMode> mode;
+		std::optional<float> rayWidth;
+		std::optional<float> rayWidthMultiplier;
 	};
 
 	struct GenerateOptions
@@ -51,16 +62,34 @@ namespace FasterNGIO::App
 		std::optional<float> alphaThresholdOverride;
 		std::optional<std::filesystem::path> gameIniDirectory;
 		bool readGameIni{ true };
+		// --grass-patch-size or --grass-eval-size was given, so Super-dense-mode does not set it.
+		bool grassPatchSizeChosen{ false };
+		// NGIO's GrassControl.ini: nullopt reads Data/SKSE/Plugins/GrassControl.ini when it exists;
+		// an empty path reads none.
+		std::optional<std::filesystem::path> ngioConfig;
 		// Worker threads; 0 for all cores.
 		std::uint32_t threads{ 0 };
 		// Threads that only write cache files (see Pipeline::FileWriterPool).
 		std::uint32_t writerThreads{ 1 };
 		bool overwrite{ false };
 		RejectChoice rejection{ RejectChoice::Auto };
+		// --reject (or the launcher) chose it, so NGIO's Ray-cast-enabled does not.
+		bool rejectionChosen{ false };
 		Gpu::GpuApi gpuApi{ Gpu::DefaultGpuApi() };
 		bool gpuDebugLayer{ false };
 		bool validateCpu{ false };
 		Rejection::RejectionConfig rejectionConfig;
+		RejectionOverrides rejectionOverrides;
+		// Experimental: objects with rejecting collision reject by their render geometry instead.
+		bool renderGeometry{ false };
+
+		// Filled from GrassControl.ini when a run starts (ApplyNgioSettings, ResolveNgioFeatures).
+		// Ensure-max-grass-types-setting: iMaxGrassTypesPerTexure is at least this.
+		std::optional<std::uint32_t> ensureMaxGrassTypes;
+		// --world all skips these worldspaces (editor IDs), or generates only the second list's.
+		std::vector<std::string> skipWorldspaces;
+		std::vector<std::string> onlyWorldspaces;
+		Rejection::RejectionFeatures rejectionFeatures;
 
 		// Diagnostics; at most one is set, and then no caches are written.
 		bool collisionSurvey{ false };

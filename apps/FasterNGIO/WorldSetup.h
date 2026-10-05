@@ -61,7 +61,7 @@ namespace FasterNGIO::App
 
 	// Every rejecting instance of the worldspace, extracted from its models' collision.
 	[[nodiscard]] std::shared_ptr<const Rejection::WorldIndex> BuildWorldIndex(const GameData::StaticWorldSnapshot& a_snapshot, GameData::FormID a_worldFormID,
-		const Archives::ArchiveResolver& a_resolver, float a_maxReach);
+		const Archives::ArchiveResolver& a_resolver, const Rejection::RejectionFeatures& a_features, float a_maxReach);
 
 #if FASTERNGIO_HAS_GPU
 	// Creates the GPU rejector for --reject auto or gpu. Throws (GpuUnsupportedError when the adapter

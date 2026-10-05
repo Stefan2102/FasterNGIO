@@ -27,6 +27,7 @@ namespace FasterNGIO::Gui
 		}
 #endif
 		settings.overwrite = file.Get("overwrite") == "1";
+		settings.renderGeometry = file.Get("render_geometry") == "1";
 		// "all", or comma-separated hex form IDs (one, from before the selector took several).
 		if (const auto worlds = file.Get("world"); worlds && *worlds != "all") {
 			settings.allWorlds = false;
@@ -51,6 +52,7 @@ namespace FasterNGIO::Gui
 		file.Set("placement", App::PlacementName(placement));
 		file.Set("rejection", App::RejectChoiceName(rejection));
 		file.Set("overwrite", overwrite ? "1" : "0");
+		file.Set("render_geometry", renderGeometry ? "1" : "0");
 		std::string worldList;
 		for (const auto world : worlds) {
 			worldList += std::format("{}{:08X}", worldList.empty() ? "" : ",", world);

@@ -3,6 +3,7 @@
 #include "GameData/GameData.h"
 #include "Grass/Placement.h"
 #include "Rejection/RejectionConfig.h"
+#include "Rejection/RejectionFeatures.h"
 #include "Rejection/WorldIndex.h"
 
 #include <atomic>
@@ -17,6 +18,11 @@
 namespace FasterNGIO::Gpu
 {
 	class GpuRejector;
+}
+
+namespace FasterNGIO::Grass
+{
+	class LandTextureMask;
 }
 
 namespace FasterNGIO::Rejection
@@ -56,6 +62,14 @@ namespace FasterNGIO::Pipeline
 		Gpu::GpuRejector* gpu{ nullptr };
 		// Re-test every cell with the brute-force CPU reference and count disagreements.
 		bool validateCpu{ false };
+		// NGIO's per-blade filters, applied with rejection: grass types that are never rejected
+		// (Ray-cast-ignore-grass-forms), and land textures that reject grass on them or within
+		// textureWidth along x and y (Ray-cast-texture-forms).
+		const Rejection::FormSet* ignoredGrass{ nullptr };
+		const Grass::LandTextureMask* textureMask{ nullptr };
+		float textureWidth{ 0.0f };
+		// NGIO's cliffs and ignored shapes (the instances' roles in world say which apply).
+		const Rejection::RejectionFeatures* features{ nullptr };
 		// Counts cells as they finish (written, skipped, failed or cancelled), for a progress display.
 		std::atomic<std::uint32_t>* progress{ nullptr };
 		// Cells not yet started when a stop is requested are cancelled instead of placed.
@@ -76,6 +90,8 @@ namespace FasterNGIO::Pipeline
 		std::uint64_t blades{ 0 };
 		std::uint64_t bladesRejected{ 0 };
 		std::uint64_t validationMismatches{ 0 };
+		// Blades NGIO's grass cliffs moved onto a cliff.
+		std::uint64_t bladesMoved{ 0 };
 	};
 
 	// Places, rejects and writes every cell through an AsyncStateGraph: a CellTrace artifact per

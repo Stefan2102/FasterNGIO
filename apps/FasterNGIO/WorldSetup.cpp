@@ -62,6 +62,10 @@ namespace FasterNGIO::App
 				spdlog::info("game INI: none found; using engine defaults");
 			}
 		}
+		// NGIO's Ensure-max-grass-types-setting raises the INI's value; the command line still wins.
+		if (a_options.ensureMaxGrassTypes) {
+			settings.maxGrassTypesPerTexture = (std::max)(settings.maxGrassTypesPerTexture, *a_options.ensureMaxGrassTypes);
+		}
 		if (a_options.maxGrassTypesOverride) {
 			settings.maxGrassTypesPerTexture = *a_options.maxGrassTypesOverride;
 		}
@@ -128,12 +132,20 @@ namespace FasterNGIO::App
 	}
 
 	std::shared_ptr<const Rejection::WorldIndex> BuildWorldIndex(const GameData::StaticWorldSnapshot& a_snapshot, GameData::FormID a_worldFormID,
-		const Archives::ArchiveResolver& a_resolver, float a_maxReach)
+		const Archives::ArchiveResolver& a_resolver, const Rejection::RejectionFeatures& a_features, float a_maxReach)
 	{
-		auto index = std::make_shared<const Rejection::WorldIndex>(a_snapshot, a_worldFormID, a_resolver, a_maxReach);
+		auto index = std::make_shared<const Rejection::WorldIndex>(a_snapshot, a_worldFormID, a_resolver, a_features, a_maxReach);
 		const auto& stats = index->Stats();
-		spdlog::info("collision: {} model(s), {} with rejecting collision, {} missing ({:.2f}s); {} of {} reference(s) instanced", stats.models,
-			stats.modelsWithCollision, stats.modelsMissing, stats.extractSeconds, stats.referencesWithCollision, stats.references);
+		spdlog::info("collision: {} model(s), {} with rejecting collision, {} missing ({:.2f}s); {} of {} reference(s) instanced{}", stats.models,
+			stats.modelsWithCollision, stats.modelsMissing, stats.extractSeconds, stats.referencesWithCollision, stats.references,
+			stats.referencesIgnored ? std::format(", {} ignored (Ray-cast-ignore-forms)", stats.referencesIgnored) : std::string{});
+		if (a_features.renderGeometry) {
+			spdlog::info("collision: {} of {} model(s) reject by their render geometry (experimental)", stats.modelsWithRenderGeometry,
+				stats.modelsWithCollision);
+		}
+		if (stats.cliffInstances != 0 || stats.partIgnoredInstances != 0) {
+			spdlog::info("collision: {} grass cliff instance(s), {} with ignored shapes", stats.cliffInstances, stats.partIgnoredInstances);
+		}
 		return index;
 	}
 

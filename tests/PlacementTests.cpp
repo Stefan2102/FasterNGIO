@@ -1,5 +1,6 @@
 #include "Grass/Placement.h"
 #include "Grass/Internal/PlacementCommon.h"
+#include "Grass/LandTexture.h"
 #include "Grass/SmoothPlacement.h"
 
 #include <gtest/gtest.h>
@@ -208,7 +209,7 @@ TEST(BladeEncoding, StandsUprightInTheGamesInstanceLayout)
 	terrain.normal[2] = 0.8f;
 	for (const float orientation : { -0.9f, 0.0f, 0.4f }) {
 		Grass::BladeCandidate blade;
-		Grass::Internal::EncodeBlade(blade, 0, 0, 100.0f, 200.0f, terrain, grass, 0.5f, orientation, 0.0f);
+		Grass::Internal::EncodeBlade(blade, 0, 0, 100.0f, 200.0f, terrain, grass, 0.5f, orientation, 0.0f, grass.FitsToSlope());
 		ExpectRotationWithUp(blade, { 0.0f, 0.0f, 1.0f });
 	}
 }
@@ -222,7 +223,54 @@ TEST(BladeEncoding, FitToSlopeStandsOnTheTerrainNormal)
 	terrain.normal[2] = 0.8f;
 	for (const float orientation : { -0.9f, 0.0f, 0.4f }) {
 		Grass::BladeCandidate blade;
-		Grass::Internal::EncodeBlade(blade, 0, 0, 100.0f, 200.0f, terrain, grass, 0.5f, orientation, 0.0f);
+		Grass::Internal::EncodeBlade(blade, 0, 0, 100.0f, 200.0f, terrain, grass, 0.5f, orientation, 0.0f, grass.FitsToSlope());
 		ExpectRotationWithUp(blade, { 0.6f, 0.0f, 0.8f });
+	}
+}
+
+TEST(LandTextureMask, PicksTheStrongestTextureAtTheNearestVertex)
+{
+	World world;
+	// The top-right quadrant's base texture is bare; the bottom-left one carries a bare alpha layer
+	// at its vertex (4, 4) (opacity 0.8 beats the base's remaining 0.2) and a weak one at (8, 8).
+	world.land.baseTextures[3] = GameData::LandBaseTexture{ .landTextureFormID = kBareTexture, .quadrant = 3 };
+	world.land.alphaTextures.push_back(GameData::LandAlphaTexture{ .landTextureFormID = kBareTexture, .quadrant = 0, .layerIndex = 0 });
+	world.land.vertexAlphas.push_back(GameData::LandVertexAlpha{ .quadrant = 0, .layerIndex = 0, .position = 4 * 17 + 4, .opacity = 0.8f });
+	world.land.vertexAlphas.push_back(GameData::LandVertexAlpha{ .quadrant = 0, .layerIndex = 0, .position = 8 * 17 + 8, .opacity = 0.3f });
+	constexpr FormID kWorld{ 0x3C };
+	world.snapshot.landsByWorldspace[kWorld].push_back(world.land);
+
+	const Grass::LandTextureMask mask(world.snapshot, kWorld, { kBareTexture });
+	EXPECT_TRUE(mask.Contains(3000.0f, 3000.0f));
+	EXPECT_FALSE(mask.Contains(1000.0f, 3000.0f));
+	// Nearest vertex (4, 4) is at (512, 512).
+	EXPECT_TRUE(mask.Contains(512.0f + 50.0f, 512.0f - 50.0f));
+	EXPECT_FALSE(mask.Contains(512.0f + 70.0f, 512.0f));
+	EXPECT_FALSE(mask.Contains(1024.0f, 1024.0f));
+	// Outside the worldspace's LANDs.
+	EXPECT_FALSE(mask.Contains(-100.0f, 100.0f));
+
+	const Grass::LandTextureMask grassy(world.snapshot, kWorld, { kGrassTexture });
+	EXPECT_TRUE(grassy.Contains(1000.0f, 1000.0f));
+	EXPECT_FALSE(grassy.Contains(512.0f, 512.0f));
+}
+
+TEST(BladeEncoding, AppliesTheGlobalScale)
+{
+	World world;
+	world.snapshot.grassesByFormID.at(FormID{ 0x100 }).heightRange = 0.5f;
+	auto settings = SmoothSettings();
+	const auto plain = Grass::GenerateCellCandidates(world.snapshot, world.land, settings);
+	settings.globalScale = 2.0f;
+	const auto scaled = Grass::GenerateCellCandidates(world.snapshot, world.land, settings);
+	ASSERT_FALSE(plain.blades.empty());
+	ASSERT_EQ(plain.blades.size(), scaled.blades.size());
+	for (std::size_t i = 0; i < plain.blades.size(); ++i) {
+		const auto offset = Grass::Internal::HalfBitsToFloat(plain.blades[i].words[13]);
+		// The final scale (1 + offset) doubles.
+		EXPECT_NEAR(Grass::Internal::HalfBitsToFloat(scaled.blades[i].words[13]), (1.0f + offset) * 2.0f - 1.0f, 2.0e-3f);
+		for (std::size_t w = 0; w < 13; ++w) {
+			EXPECT_EQ(plain.blades[i].words[w], scaled.blades[i].words[w]);
+		}
 	}
 }

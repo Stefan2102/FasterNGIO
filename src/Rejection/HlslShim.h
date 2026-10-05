@@ -42,6 +42,8 @@ namespace FasterNGIO::Rejection::Hlsl
 	[[nodiscard]] inline float abs(float v) { return std::fabs(v); }
 	[[nodiscard]] inline constexpr float min(float a, float b) { return a < b ? a : b; }
 	[[nodiscard]] inline constexpr float max(float a, float b) { return a > b ? a : b; }
+	[[nodiscard]] inline float sqrt(float v) { return std::sqrt(v); }
+	[[nodiscard]] inline float3 normalize(float3 a) { return a * (1.0f / std::sqrt(dot(a, a))); }
 
 	// Internal linkage: the .hlsli's functions are not marked inline (HLSL has no ODR), and several
 	// translation units include them.

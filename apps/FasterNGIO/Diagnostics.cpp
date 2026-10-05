@@ -239,7 +239,11 @@ namespace FasterNGIO::App
 			const auto& snapshot = a_plugins.snapshot;
 			const auto shapes = MakeQueryShapes(snapshot, a_options.rejectionConfig);
 			const auto resolver = MakeResolver(a_options, a_plugins);
-			const auto world = BuildWorldIndex(snapshot, a_options.worlds.front(), resolver, shapes.maxReach);
+			// The benchmark times the plain volume test: no grass cliffs or ignored shapes.
+			auto features = a_options.rejectionFeatures;
+			features.cliffs = false;
+			features.ignoredShapes.clear();
+			const auto world = BuildWorldIndex(snapshot, a_options.worlds.front(), resolver, features, shapes.maxReach);
 
 			struct Cell
 			{

@@ -24,6 +24,8 @@ namespace FasterNGIO::Gui
 		Grass::PlacementMode placement{ Grass::PlacementMode::Smooth };
 		App::RejectChoice rejection{ App::RejectChoice::Auto };
 		bool overwrite{ false };
+		// Experimental: GenerateOptions::renderGeometry.
+		bool renderGeometry{ false };
 
 		// Defaults for anything missing or unreadable.
 		[[nodiscard]] static LauncherSettings Load(const std::filesystem::path& a_path);

@@ -65,6 +65,8 @@ namespace FasterNGIO::Grass
 		float alphaThreshold{ 0.0f };
 		// Water height for cells that have none.
 		std::optional<float> waterHeight;
+		// NGIO's Global-grass-scale: multiplies every blade's final scale.
+		float globalScale{ 1.0f };
 	};
 
 	// One output group (one GRAS) of a cell, in first-use order.
@@ -77,13 +79,17 @@ namespace FasterNGIO::Grass
 	// The 16-bit words of one blade in a .cgid, as the engine lays them out.
 	inline constexpr std::uint32_t kBladeWords = 16;
 
-	// A placed blade, encoded as the engine stores it. Rejection only removes blades; it never
-	// changes the words of the blades that survive.
+	// A placed blade, encoded as the engine stores it. Rejection removes blades, and moves the ones
+	// NGIO's grass cliffs lift onto a cliff (re-encoded from the draws kept here).
 	struct BladeCandidate
 	{
 		std::array<std::uint16_t, kBladeWords> words{};
 		float position[3]{};
 		std::uint32_t groupIndex{ 0 };
+		// The colour, orientation and height draws the words were encoded from.
+		float brightness{ 0.0f };
+		float orientation{ 0.0f };
+		float heightRandom{ 0.0f };
 	};
 
 	struct CellCandidates
@@ -93,6 +99,10 @@ namespace FasterNGIO::Grass
 		std::vector<CellGrassGroup> groups;
 		std::vector<BladeCandidate> blades;
 	};
+
+	// Moves a blade of a_cell onto a surface at height a_z, standing on a_normal (NGIO's grass cliffs,
+	// which make the blade fit to the slope): its words are encoded again from its own draws.
+	void MoveBlade(BladeCandidate& a_blade, const CellCandidates& a_cell, float a_z, const float (&a_normal)[3], float a_globalScale);
 
 	// Places grass on one exterior LAND, keeping every blade that passes the density, water and
 	// slope tests: vanilla in the engine's RNG order, or smooth. Empty for a LAND without a cell or

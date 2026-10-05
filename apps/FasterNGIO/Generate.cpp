@@ -1,11 +1,14 @@
 #include "Generate.h"
 
 #include "Diagnostics.h"
+#include "NgioConfig.h"
 #include "WorldSetup.h"
 
 #include "Grass/CellCache.h"
+#include "Grass/LandTexture.h"
 #include "Pipeline/CellPipeline.h"
 #include "Pipeline/FileWriterPool.h"
+#include "Platform/Text.h"
 #include "Rejection/CpuBvh.h"
 
 #include <oneapi/tbb/parallel_for.h>
@@ -114,7 +117,7 @@ namespace FasterNGIO::App
 			if (!a_shared.resolver) {
 				a_shared.resolver.emplace(MakeResolver(options, a_shared.plugins));
 			}
-			rejection.index = BuildWorldIndex(a_shared.plugins.snapshot, a_worldFormID, *a_shared.resolver, a_shared.shapes.maxReach);
+			rejection.index = BuildWorldIndex(a_shared.plugins.snapshot, a_worldFormID, *a_shared.resolver, a_shared.options.rejectionFeatures, a_shared.shapes.maxReach);
 			ThrowIfStopped(a_shared.control);
 			if (rejection.backend == RejectionBackend::Cpu) {
 				rejection.cpuBvh = std::make_unique<Rejection::CpuBvh>(*rejection.index);
@@ -147,8 +150,9 @@ namespace FasterNGIO::App
 			if (a_shared.options.validateCpu) {
 				spdlog::info("validation: {} blade(s) differ from the brute-force CPU reference", a_stats.validationMismatches);
 			}
-			spdlog::info("generated {} file(s), skipped {}, failed {}, blades={} rejected={} in {:.2f}s (total {:.2f}s, {} file(s) still queued)", a_stats.cellsWritten,
-				a_stats.cellsSkipped, a_stats.cellsFailed, a_stats.blades, a_stats.bladesRejected, SecondsSince(a_generationBegin), SecondsSince(a_shared.begin),
+			spdlog::info("generated {} file(s), skipped {}, failed {}, blades={} rejected={}{} in {:.2f}s (total {:.2f}s, {} file(s) still queued)", a_stats.cellsWritten,
+				a_stats.cellsSkipped, a_stats.cellsFailed, a_stats.blades, a_stats.bladesRejected,
+				a_stats.bladesMoved ? std::format(" moved onto cliffs={}", a_stats.bladesMoved) : std::string{}, SecondsSince(a_generationBegin), SecondsSince(a_shared.begin),
 				a_shared.writer.PendingFiles());
 		}
 
@@ -194,6 +198,19 @@ namespace FasterNGIO::App
 			pipeline.cpuBvh = rejection.cpuBvh.get();
 			pipeline.gpu = rejection.gpu;
 			pipeline.validateCpu = options.validateCpu;
+			const auto& features = options.rejectionFeatures;
+			std::optional<Grass::LandTextureMask> textureMask;
+			if (rejection.backend != RejectionBackend::None) {
+				pipeline.features = std::addressof(features);
+				if (!features.ignoredGrassForms.empty()) {
+					pipeline.ignoredGrass = std::addressof(features.ignoredGrassForms);
+				}
+				if (!features.textureForms.empty()) {
+					textureMask.emplace(snapshot, a_worldFormID, features.textureForms);
+					pipeline.textureMask = std::addressof(*textureMask);
+					pipeline.textureWidth = features.textureWidth;
+				}
+			}
 			pipeline.progress = control.progress ? std::addressof(control.progress->cellsDone) : nullptr;
 			pipeline.stop = control.stop;
 			pipeline.writer = std::addressof(a_shared.writer);
@@ -210,13 +227,29 @@ namespace FasterNGIO::App
 			const auto available = ListWorlds(a_snapshot);
 			std::vector<GameData::FormID> worlds;
 			if (a_options.allWorlds) {
+				// NGIO's Only-/Skip-pregenerate-world-spaces, by editor ID: only the first list's when it
+				// has any, else all but the second's.
+				const auto listed = [](const std::vector<std::string>& a_list, const std::string& a_editorID) {
+					return !a_editorID.empty() && std::ranges::any_of(a_list, [&](const std::string& a_name) { return Platform::IEquals(a_name, a_editorID); });
+				};
+				std::vector<std::string> skipped;
 				for (const auto& summary : available) {
-					worlds.push_back(summary.formID);
+					const bool skip = a_options.onlyWorldspaces.empty() ? listed(a_options.skipWorldspaces, summary.editorID)
+					                                                    : !listed(a_options.onlyWorldspaces, summary.editorID);
+					if (skip) {
+						skipped.push_back(summary.editorID.empty() ? std::format("{:08X}", summary.formID.value) : summary.editorID);
+					} else {
+						worlds.push_back(summary.formID);
+					}
 				}
 				if (worlds.empty()) {
-					throw std::runtime_error("no worldspace has LAND records");
+					throw std::runtime_error(skipped.empty() ? "no worldspace has LAND records" : "every worldspace with LAND records is skipped by the NGIO settings");
 				}
-				spdlog::info("{} worldspace(s) with LAND records", worlds.size());
+				spdlog::info("{} worldspace(s) with LAND records{}", worlds.size(),
+					skipped.empty() ? std::string{} : std::format("; skipping {} as the NGIO settings ask", skipped.size()));
+				for (const auto& name : skipped) {
+					spdlog::debug("skipping worldspace {}", name);
+				}
 				return worlds;
 			}
 			// Checked before the first world runs, so a mistyped one does not stop the run halfway.
@@ -270,7 +303,7 @@ namespace FasterNGIO::App
 		return worlds;
 	}
 
-	RunResult Run(const GenerateOptions& a_options, const RunControl& a_control)
+	RunResult Run(const GenerateOptions& a_requested, const RunControl& a_control)
 	{
 		RunResult result;
 		// Files queue in memory up to this many bytes; past it, cells wait to be placed.
@@ -281,26 +314,34 @@ namespace FasterNGIO::App
 		std::uint64_t blades = 0;
 		std::uint64_t rejected = 0;
 		const auto begin = std::chrono::steady_clock::now();
+		auto options = a_requested;
+		const auto ngio = LoadNgioSettingsFor(options);
+		ApplyNgioSettings(ngio, options);
 		try {
 			SetStage(a_control, RunStage::LoadingPlugins);
 			std::optional<LoadedPlugins> loaded;
 			if (!a_control.preloaded) {
-				loaded.emplace(LoadStaticSnapshot(a_options));
+				loaded.emplace(LoadStaticSnapshot(options));
 			}
 			const auto& plugins = a_control.preloaded ? *a_control.preloaded : *loaded;
 			ThrowIfStopped(a_control);
-			if (a_options.RunsDiagnostic()) {
-				result.exitCode = RunDiagnostic(a_options, plugins);
+			if (options.rejection != RejectChoice::None) {
+				options.rejectionFeatures = ResolveNgioFeatures(ngio, plugins.loadOrder);
+				options.rejectionFeatures.renderGeometry = options.renderGeometry;
+				LogRejectionFeatures(options.rejectionFeatures);
+			}
+			if (options.RunsDiagnostic()) {
+				result.exitCode = RunDiagnostic(options, plugins);
 				SetStage(a_control, RunStage::Finished);
 				return result;
 			}
 
-			const auto worlds = SelectWorlds(a_options, plugins.snapshot);
-			const auto placement = ResolvePlacementSettings(a_options);
-			const auto shapes = MakeQueryShapes(plugins.snapshot, a_options.rejectionConfig);
-			writer.emplace(a_options.writerThreads, kMaxPendingWriteBytes);
+			const auto worlds = SelectWorlds(options, plugins.snapshot);
+			const auto placement = ResolvePlacementSettings(options);
+			const auto shapes = MakeQueryShapes(plugins.snapshot, options.rejectionConfig);
+			writer.emplace(options.writerThreads, kMaxPendingWriteBytes);
 			RunShared shared{
-				.options = a_options,
+				.options = options,
 				.control = a_control,
 				.plugins = plugins,
 				.placement = placement,
@@ -338,7 +379,7 @@ namespace FasterNGIO::App
 			writer->Drain();
 			if (const auto files = writer->FilesDone(); files != 0) {
 				spdlog::info("writers: {} file(s) in {:.2f}s of filesystem time over {} thread(s) ({:.0f} us per file); waited {:.2f}s for the last ones", files,
-					writer->BusySeconds(), a_options.writerThreads, writer->BusySeconds() * 1.0e6 / static_cast<double>(files), SecondsSince(drainBegin));
+					writer->BusySeconds(), options.writerThreads, writer->BusySeconds() * 1.0e6 / static_cast<double>(files), SecondsSince(drainBegin));
 			}
 			for (const auto& tally : tallies) {
 				result.cellsWritten += tally->written.load();

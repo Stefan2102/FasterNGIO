@@ -7,7 +7,9 @@
 #include <cmath>
 #include <format>
 #include <limits>
+#include <memory>
 #include <spanstream>
+#include <string_view>
 #include <unordered_map>
 
 namespace FasterNGIO::Collision
@@ -239,6 +241,67 @@ namespace FasterNGIO::Collision
 				}
 			}
 
+			void ComputeRenderShapes()
+			{
+				if (auto* root = _nif.GetRootNode()) {
+					_model.rootName = root->name.get();
+				}
+				std::vector<nifly::Vector3> vertices;
+				for (auto* shape : _nif.GetShapes()) {
+					vertices.clear();
+					if (!_nif.GetVertsForShape(shape, vertices) || vertices.empty()) {
+						continue;
+					}
+					const auto toModel = NodeToModel(_header.GetBlockID(shape));
+					auto& out = _model.renderShapes.emplace_back();
+					out.name = shape->name.get();
+					out.vertices.reserve(vertices.size());
+					for (const auto& v : vertices) {
+						out.vertices.push_back(toModel.Point(v.x, v.y, v.z));
+					}
+				}
+			}
+
+			// Replaces the collision with the triangles of the visible, solid render shapes. Models
+			// whose render shapes give no triangles keep their collision.
+			void UseRenderGeometry()
+			{
+				std::vector<Triangle> triangles;
+				std::vector<nifly::Vector3> vertices;
+				std::vector<nifly::Triangle> indices;
+				for (auto* shape : _nif.GetShapes()) {
+					const auto id = _header.GetBlockID(shape);
+					if (!SolidRenderShape(*shape, id)) {
+						continue;
+					}
+					vertices.clear();
+					indices.clear();
+					if (!_nif.GetVertsForShape(shape, vertices) || vertices.empty() || !shape->GetTriangles(indices)) {
+						continue;
+					}
+					const auto toModel = NodeToModel(id);
+					std::vector<Float3> points;
+					points.reserve(vertices.size());
+					for (const auto& v : vertices) {
+						points.push_back(toModel.Point(v.x, v.y, v.z));
+					}
+					for (const auto& tri : indices) {
+						if (tri.p1 < points.size() && tri.p2 < points.size() && tri.p3 < points.size()) {
+							triangles.push_back(Triangle{ .vertices = { points[tri.p1], points[tri.p2], points[tri.p3] } });
+						}
+					}
+				}
+				if (triangles.empty()) {
+					return;
+				}
+				_model.triangles = std::move(triangles);
+				_model.hulls.clear();
+				_model.hullPlanes.clear();
+				_model.hullTriangles.clear();
+				_model.capsules.clear();
+				_model.stats.renderGeometry = true;
+			}
+
 		private:
 			// The engine replaces the root node's transform with the reference's, so it is skipped.
 			[[nodiscard]] Affine NodeToModel(std::uint32_t a_blockID) const
@@ -256,6 +319,34 @@ namespace FasterNGIO::Collision
 					current = parentIt->second;
 				}
 				return result;
+			}
+
+			// A shape that is drawn as an opaque or alpha-tested surface: not hidden (itself or a
+			// parent), not skinned, and lit by the lighting shader without the decal flags. Effect,
+			// water and sky shapes, decals and editor markers are skipped.
+			[[nodiscard]] bool SolidRenderShape(nifly::NiShape& a_shape, std::uint32_t a_blockID) const
+			{
+				if (a_shape.IsSkinned()) {
+					return false;
+				}
+				for (auto current = a_blockID; current != nifly::NIF_NPOS;) {
+					if (auto* object = _header.GetBlock<nifly::NiAVObject>(current)) {
+						if ((object->flags & 1u) != 0 || std::string_view(object->name.get()).starts_with("EditorMarker")) {
+							return false;
+						}
+					}
+					const auto parentIt = _parents.find(current);
+					current = parentIt == _parents.end() ? nifly::NIF_NPOS : parentIt->second;
+				}
+				auto* shader = _nif.GetShader(std::addressof(a_shape));
+				if (!shader) {
+					return true;
+				}
+				auto* lighting = dynamic_cast<nifly::BSLightingShaderProperty*>(shader);
+				if (!lighting) {
+					return false;
+				}
+				return (lighting->shaderFlags1 & (nifly::SLSF1_DECAL | nifly::SLSF1_DYNAMIC_DECAL)) == 0;
 			}
 
 			void Count(ShapeType a_type) { ++_model.stats.shapes[static_cast<std::size_t>(a_type)]; }
@@ -575,6 +666,12 @@ namespace FasterNGIO::Collision
 			if (a_options.renderBounds) {
 				extractor.ComputeRenderBounds();
 			}
+			if (a_options.renderShapes) {
+				extractor.ComputeRenderShapes();
+			}
+			if (a_options.renderGeometry && !model.Empty()) {
+				extractor.UseRenderGeometry();
+			}
 		} catch (const std::exception&) {
 			model = {};
 			model.status = ExtractionStatus::LoadFailed;
@@ -590,5 +687,34 @@ namespace FasterNGIO::Collision
 			model.status = ExtractionStatus::NoCollision;
 		}
 		return model;
+	}
+
+	const RenderShape* NearestRenderShape(const CollisionModel& a_model, const Float3& a_point)
+	{
+		const RenderShape* best = nullptr;
+		float bestDistance = (std::numeric_limits<float>::max)();
+		for (const auto& shape : a_model.renderShapes) {
+			for (const auto& v : shape.vertices) {
+				const float dx = v.x - a_point.x;
+				const float dy = v.y - a_point.y;
+				const float dz = v.z - a_point.z;
+				const float distance = dx * dx + dy * dy + dz * dz;
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					best = std::addressof(shape);
+				}
+			}
+		}
+		return best;
+	}
+
+	bool RenderShapeNamed(const CollisionModel& a_model, const RenderShape& a_shape, std::string_view a_name)
+	{
+		if (a_shape.name == a_name) {
+			return true;
+		}
+		const std::string_view root = a_model.rootName;
+		return a_shape.name.size() == root.size() + 1 + a_name.size() && a_shape.name.starts_with(root) && a_shape.name[root.size()] == ':' &&
+		       std::string_view(a_shape.name).substr(root.size() + 1) == a_name;
 	}
 }

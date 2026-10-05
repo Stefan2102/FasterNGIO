@@ -2,6 +2,7 @@
 
 #include "Collision/CollisionModel.h"
 #include "GameData/FormID.h"
+#include "Rejection/RejectionFeatures.h"
 
 #include <cstdint>
 #include <span>
@@ -38,6 +39,16 @@ namespace FasterNGIO::Rejection
 			};
 		}
 
+		// The linear part alone, for directions.
+		[[nodiscard]] Float3 ApplyLinear(const Float3& a_direction) const
+		{
+			return {
+				m[0][0] * a_direction.x + m[0][1] * a_direction.y + m[0][2] * a_direction.z,
+				m[1][0] * a_direction.x + m[1][1] * a_direction.y + m[1][2] * a_direction.z,
+				m[2][0] * a_direction.x + m[2][1] * a_direction.y + m[2][2] * a_direction.z,
+			};
+		}
+
 		[[nodiscard]] Similarity Inverse() const;
 
 		// A reference's placement: Skyrim's Euler angles (radians) and uniform XSCL scale.
@@ -50,6 +61,16 @@ namespace FasterNGIO::Rejection
 		Collision::CollisionModel collision{};
 	};
 
+	// What an instance is to NGIO's settings, as bits (they are also the GPU's instance masks): an
+	// ordinary rejecting object, a grass cliff (grass touching it may move onto it), or an object
+	// whose named render shapes do not reject.
+	enum InstanceRole : std::uint8_t
+	{
+		kRoleOrdinary = 1,
+		kRoleCliff = 2,
+		kRolePartIgnored = 4
+	};
+
 	// One placed reference whose model has grass-rejecting collision.
 	struct Instance
 	{
@@ -60,14 +81,33 @@ namespace FasterNGIO::Rejection
 		Similarity modelFromWorld;
 		Float3 aabbMin;
 		Float3 aabbMax;
+		InstanceRole role{ kRoleOrdinary };
+		// A [CliffObjects] "Steep" cliff: its neighbour check allows a larger height difference.
+		bool steep{ false };
+	};
+
+	// Where a segment meets an instance's collision surface: t in [0, 1] along it, and the world-space
+	// unit normal there, facing against the segment.
+	struct WorldSegmentHit
+	{
+		std::uint32_t instance{ 0 };
+		float t{ 0.0f };
+		Float3 normal;
 	};
 
 	struct WorldIndexStats
 	{
 		std::uint64_t references{ 0 };
 		std::uint64_t referencesWithCollision{ 0 };
+		// References of Ray-cast-ignore-forms base forms, left out.
+		std::uint64_t referencesIgnored{ 0 };
+		// Instances that are grass cliffs, or have ignored render shapes (NGIO).
+		std::uint64_t cliffInstances{ 0 };
+		std::uint64_t partIgnoredInstances{ 0 };
 		std::uint64_t models{ 0 };
 		std::uint64_t modelsWithCollision{ 0 };
+		// Of those, the models represented by their render geometry (RejectionFeatures::renderGeometry).
+		std::uint64_t modelsWithRenderGeometry{ 0 };
 		std::uint64_t modelsMissing{ 0 };
 		double extractSeconds{ 0.0 };
 	};
@@ -79,6 +119,8 @@ namespace FasterNGIO::Rejection
 		Similarity worldFromModel;
 		GameData::FormID referenceFormID{};
 		GameData::FormID baseFormID{};
+		InstanceRole role{ kRoleOrdinary };
+		bool steep{ false };
 	};
 
 	// Every rejecting instance of one worldspace, binned by the exterior cells its bounds (grown
@@ -86,11 +128,13 @@ namespace FasterNGIO::Rejection
 	class WorldIndex
 	{
 	public:
-		// The worldspace's placed references, with each model's collision extracted from the archives.
+		// The worldspace's placed references, with each model's collision extracted from the archives:
+		// only collision in a_features' layers, and no references of its ignored base forms.
 		WorldIndex(
 			const GameData::StaticWorldSnapshot& a_snapshot,
 			GameData::FormID a_worldFormID,
 			const Archives::ArchiveResolver& a_resolver,
+			const RejectionFeatures& a_features,
 			float a_maxQueryReach);
 
 		// Models whose collision is already known, placed as given (tests build worlds this way).
@@ -103,7 +147,7 @@ namespace FasterNGIO::Rejection
 
 	private:
 		// Instances a placed model when it has rejecting collision, and bins it.
-		void AddInstance(std::uint32_t a_model, GameData::FormID a_reference, GameData::FormID a_base, const Similarity& a_worldFromModel, float a_maxQueryReach);
+		void AddInstance(const PlacedModel& a_placement, float a_maxQueryReach);
 
 		std::vector<ModelRecord> _models;
 		std::vector<Instance> _instances;

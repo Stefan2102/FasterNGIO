@@ -31,6 +31,8 @@ add_library(FasterNGIOCore STATIC
 	Grass/NgioCacheWriter.cpp
 	Grass/NgioCacheWriter.h
 	Grass/Internal/PlacementCommon.h
+	Grass/LandTexture.cpp
+	Grass/LandTexture.h
 	Grass/Placement.cpp
 	Grass/Placement.h
 	Grass/SmoothPlacement.cpp
@@ -60,9 +62,12 @@ add_library(FasterNGIOCore STATIC
 	Rejection/CpuReference.cpp
 	Rejection/CpuReference.h
 	Rejection/HlslShim.h
+	Rejection/NgioRules.cpp
+	Rejection/NgioRules.h
 	Rejection/PrimitiveTests.h
 	Rejection/RejectionConfig.cpp
 	Rejection/RejectionConfig.h
+	Rejection/RejectionFeatures.h
 	Rejection/WorldIndex.cpp
 	Rejection/WorldIndex.h
 	../shaders/Shared/GrassQueryMath.hlsli

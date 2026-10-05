@@ -1,5 +1,6 @@
 #include "Rejection/CpuReference.h"
 
+#include "GameData/Records.h"
 #include "Grass/Placement.h"
 #include "Rejection/HlslShim.h"
 #include "Rejection/PrimitiveTests.h"
@@ -121,5 +122,49 @@ namespace FasterNGIO::Rejection
 			}
 		}
 		return rejected;
+	}
+
+	void SegmentHitsBruteForce(const WorldIndex& a_world, const Float3& a_p, const Float3& a_q, std::vector<WorldSegmentHit>& a_hits)
+	{
+		constexpr float kCellSize = GameData::kSkyrimTerrainCellSize;
+		const auto cellX = static_cast<std::int32_t>(std::floor(a_p.x / kCellSize));
+		const auto cellY = static_cast<std::int32_t>(std::floor(a_p.y / kCellSize));
+		for (const auto index : a_world.InstancesInCell(cellX, cellY)) {
+			const auto& instance = a_world.Instances()[index];
+			const auto& model = a_world.Models()[instance.model].collision;
+			const auto p = ToHlsl(instance.modelFromWorld.Apply(a_p));
+			const auto q = ToHlsl(instance.modelFromWorld.Apply(a_q));
+			const auto add = [&](const Hlsl::SegmentHit& a_hit) {
+				if (a_hit.hit) {
+					a_hits.push_back(ToWorldHit(index, instance.worldFromModel, a_hit));
+				}
+			};
+			for (const auto& triangle : model.triangles) {
+				add(SegmentHitTriangle(triangle, p, q));
+			}
+			for (const auto& hull : model.hulls) {
+				add(SegmentHitHull(model, hull, p, q));
+			}
+			for (const auto& capsule : model.capsules) {
+				add(SegmentHitCapsule(capsule, p, q));
+			}
+		}
+	}
+
+	VolumeHits ClassifyCapsuleBruteForce(const WorldIndex& a_world, std::int32_t a_cellX, std::int32_t a_cellY, const Float3& a_p, const Float3& a_q, float a_radius)
+	{
+		VolumeHits hits;
+		for (const auto index : a_world.InstancesInCell(a_cellX, a_cellY)) {
+			const auto& instance = a_world.Instances()[index];
+			if (!CapsuleOverlapsInstance(a_world, instance, a_p, a_q, a_radius)) {
+				continue;
+			}
+			hits.ordinary = hits.ordinary || instance.role == kRoleOrdinary;
+			hits.cliff = hits.cliff || instance.role == kRoleCliff;
+			if (instance.role == kRolePartIgnored && hits.partIgnored == kNoInstance) {
+				hits.partIgnored = index;
+			}
+		}
+		return hits;
 	}
 }

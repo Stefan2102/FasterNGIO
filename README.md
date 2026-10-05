@@ -49,6 +49,38 @@ Rejection backends (`--reject`):
 
 Both backends produce the same caches (to a few float-precision edge cases per million blades).
 
+Experimental: `--render-geometry` (in the window: "Use model geometry instead of collision") makes
+objects that have collision reject grass by their visible mesh instead of their collision, which is
+usually coarser. Hidden, skinned, decal and effect shapes are left out, and objects without
+collision still keep their grass, as with NGIO. In Tamriel this rejects about 6% more blades. The GPU
+builds roughly five times the acceleration-structure memory (about 130 MiB), and the run takes a few
+seconds longer.
+
+NGIO's own settings apply too. FasterNGIO reads `Data\SKSE\Plugins\GrassControl.ini` (under MO2,
+the one its virtual filesystem shows) and the `*_NGIO.ini` files in `Data`, as NGIO does. Settings
+that only affect the game at runtime are ignored. The rest:
+
+- `[RayCastConfig]`:
+  - **Shape:** ray-cast height, depth, width and width multiplier.
+  - **Ray-cast-enabled:** `false` turns rejection off.
+  - **Collision layers.**
+  - **Ignore forms:** objects that never reject grass.
+  - **Ignore grass forms:** grass types that are never rejected.
+  - **Texture forms:** land textures (within the texture width) where grass is rejected.
+- **Grass cliffs.** Grass under a cliff object (Grass-cliffs-forms, or `[CliffObjects]` in an
+  `*_NGIO.ini`) moves onto the cliff's top, standing on its slope. This happens when the cliff
+  passes NGIO's slope and neighbour checks, and `[CliffObjects]`' shape names and `Steep` flag
+  apply. Unlike NGIO, grass that touches a cliff but fails those checks is rejected rather than
+  left inside the rock.
+- **`[IgnoredShapes]`:** hits on the named render shapes of an object don't reject grass.
+- `[GrassConfig]`: global grass scale, super-dense mode, Overwrite-min-grass-size,
+  Ensure-max-grass-types-setting, and the skip and only lists for pregenerated worldspaces (they
+  apply to `--world all` and the window's "All worldspaces").
+
+NGIO itself never reads `Ray-cast-mode` (its reader stores the value in another setting), so the
+capsule query is kept whatever the file says; `--ray-mode` changes it here. Command-line options
+override the file, and `--ngio-config <file|none>` picks another file or none.
+
 ## Without Mod Organizer 2
 
 Run `FasterNGIO` without arguments (double-click it) and a window opens instead:

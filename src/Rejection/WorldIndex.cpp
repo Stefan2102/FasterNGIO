@@ -60,13 +60,31 @@ namespace FasterNGIO::Rejection
 		const GameData::StaticWorldSnapshot& a_snapshot,
 		GameData::FormID a_worldFormID,
 		const Archives::ArchiveResolver& a_resolver,
+		const RejectionFeatures& a_features,
 		float a_maxQueryReach)
 	{
 		struct PendingReference
 		{
 			const GameData::PlacementInfo* placement{ nullptr };
 			std::uint32_t model{ 0 };
+			InstanceRole role{ kRoleOrdinary };
+			bool steep{ false };
 		};
+
+		// NGIO's cliff and ignored-shape forms; the models of those with shape names need their render shapes.
+		const auto roleOf = [&](GameData::FormID a_base, bool& a_steep, bool& a_needsShapes) {
+			if (const auto cliff = a_features.cliffObjects.find(a_base); a_features.cliffs && cliff != a_features.cliffObjects.end()) {
+				a_steep = cliff->second.steep;
+				a_needsShapes = !cliff->second.allowedShapes.empty() || !cliff->second.blockedShapes.empty();
+				return kRoleCliff;
+			}
+			if (a_features.ignoredShapes.contains(a_base)) {
+				a_needsShapes = true;
+				return kRolePartIgnored;
+			}
+			return kRoleOrdinary;
+		};
+		std::vector<std::uint8_t> needsShapes;
 
 		std::unordered_map<std::string, std::uint32_t> modelIndexByPath;
 		std::vector<PendingReference> references;
@@ -79,19 +97,30 @@ namespace FasterNGIO::Rejection
 				if (baseIt == a_snapshot.baseObjectsByFormID.end() || baseIt->second.modelPath.empty()) {
 					continue;
 				}
+				if (a_features.ignoredBaseForms.contains(placement.baseFormID)) {
+					++_stats.referencesIgnored;
+					continue;
+				}
 				++_stats.references;
 				auto path = GameData::NormalizeModelPath(baseIt->second.modelPath);
 				const auto [it, inserted] = modelIndexByPath.try_emplace(path, static_cast<std::uint32_t>(_models.size()));
 				if (inserted) {
 					_models.push_back(ModelRecord{ .path = std::move(path) });
+					needsShapes.push_back(0);
 				}
-				references.push_back(PendingReference{ .placement = std::addressof(placement), .model = it->second });
+				bool steep = false;
+				bool shapes = false;
+				const auto role = roleOf(placement.baseFormID, steep, shapes);
+				needsShapes[it->second] = (needsShapes[it->second] != 0 || shapes) ? 1 : 0;
+				references.push_back(PendingReference{ .placement = std::addressof(placement), .model = it->second, .role = role, .steep = steep });
 			}
 		}
 		_stats.models = _models.size();
 
 		const auto extractBegin = std::chrono::steady_clock::now();
-		const Collision::ExtractionOptions options{};
+		Collision::ExtractionOptions options;
+		options.layerMask = a_features.layerMask;
+		options.renderGeometry = a_features.renderGeometry;
 		std::vector<std::uint8_t> missing(_models.size(), 0);
 		oneapi::tbb::parallel_for(std::size_t{ 0 }, _models.size(), [&](std::size_t i) {
 			const auto bytes = a_resolver.Read(_models[i].path);
@@ -100,17 +129,28 @@ namespace FasterNGIO::Rejection
 				_models[i].collision.status = Collision::ExtractionStatus::LoadFailed;
 				return;
 			}
-			_models[i].collision = Collision::ExtractCollision(*bytes, options);
+			auto modelOptions = options;
+			modelOptions.renderShapes = needsShapes[i] != 0;
+			_models[i].collision = Collision::ExtractCollision(*bytes, modelOptions);
 		});
 		_stats.extractSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - extractBegin).count();
 		for (std::size_t i = 0; i < _models.size(); ++i) {
 			_stats.modelsMissing += missing[i];
 			_stats.modelsWithCollision += _models[i].collision.status == Collision::ExtractionStatus::HasCollision;
+			_stats.modelsWithRenderGeometry += _models[i].collision.stats.renderGeometry ? 1 : 0;
 		}
 
 		for (const auto& reference : references) {
 			const auto& placement = *reference.placement;
-			AddInstance(reference.model, placement.formID, placement.baseFormID, Similarity::FromPlacement(placement.position, placement.rotation, placement.scale),
+			AddInstance(
+				PlacedModel{
+					.model = reference.model,
+					.worldFromModel = Similarity::FromPlacement(placement.position, placement.rotation, placement.scale),
+					.referenceFormID = placement.formID,
+					.baseFormID = placement.baseFormID,
+					.role = reference.role,
+					.steep = reference.steep,
+				},
 				a_maxQueryReach);
 		}
 	}
@@ -124,21 +164,25 @@ namespace FasterNGIO::Rejection
 		}
 		_stats.references = a_placements.size();
 		for (const auto& placement : a_placements) {
-			AddInstance(placement.model, placement.referenceFormID, placement.baseFormID, placement.worldFromModel, a_maxQueryReach);
+			AddInstance(placement, a_maxQueryReach);
 		}
 	}
 
-	void WorldIndex::AddInstance(std::uint32_t a_model, GameData::FormID a_reference, GameData::FormID a_base, const Similarity& a_worldFromModel, float a_maxQueryReach)
+	void WorldIndex::AddInstance(const PlacedModel& a_placement, float a_maxQueryReach)
 	{
-		const auto& model = _models[a_model].collision;
+		const auto& model = _models[a_placement.model].collision;
 		if (model.status != Collision::ExtractionStatus::HasCollision) {
 			return;
 		}
 		Instance instance;
-		instance.model = a_model;
-		instance.referenceFormID = a_reference;
-		instance.baseFormID = a_base;
-		instance.worldFromModel = a_worldFromModel;
+		instance.model = a_placement.model;
+		instance.referenceFormID = a_placement.referenceFormID;
+		instance.baseFormID = a_placement.baseFormID;
+		instance.worldFromModel = a_placement.worldFromModel;
+		instance.role = a_placement.role;
+		instance.steep = a_placement.steep;
+		_stats.cliffInstances += instance.role == kRoleCliff ? 1 : 0;
+		_stats.partIgnoredInstances += instance.role == kRolePartIgnored ? 1 : 0;
 		instance.modelFromWorld = instance.worldFromModel.Inverse();
 
 		constexpr auto inf = (std::numeric_limits<float>::max)();

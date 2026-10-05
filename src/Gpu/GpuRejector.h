@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Gpu/GpuApi.h"
+#include "Rejection/NgioRules.h"
 #include "Rejection/RejectionConfig.h"
 
 #include <atomic>
@@ -38,20 +39,49 @@ namespace FasterNGIO::Gpu
 	// gets a tiny radius: the intersection shaders test capsules.
 	[[nodiscard]] std::vector<Query> MakeQueries(std::span<const Grass::BladeCandidate> a_blades, std::span<const Rejection::QueryShape> a_shapes);
 
+	enum class TraceKind : std::uint32_t
+	{
+		// Each query is a blade's volume (Query). The result is one hit flag per query, or, when the world
+		// has NGIO roles (cliffs, ignored shapes), kVolumeRoleWords words: role bits (Rejection::InstanceRole)
+		// and the first part-ignored instance.
+		Volume,
+		// Each query is a cliff candidate (x, y, z, neighbour offset; see MakeCliffQuery). The result
+		// is kCliffResultWords words (see ReadCliffRays).
+		Cliff
+	};
+
+	// RejectionLayout.hlsli's, checked in GpuRejector.cpp.
+	inline constexpr std::uint32_t kVolumeRoleWords = 2;
+	inline constexpr std::uint32_t kCliffResultWords = 24;
+
+	// A volume result with roles (kVolumeRoleWords words) as the shared decisions read it.
+	[[nodiscard]] Rejection::VolumeHits ReadVolumeHits(std::span<const std::uint32_t> a_words);
+
+	// A cliff result (kCliffResultWords words) as the shared decisions read it.
+	[[nodiscard]] Rejection::CliffRays ReadCliffRays(std::span<const std::uint32_t> a_words);
+
+	// A cliff candidate's query: the blade's position and how far beside the cliff point its neighbours are.
+	[[nodiscard]] inline Query MakeCliffQuery(const float (&a_position)[3], float a_neighbourOffset)
+	{
+		return Query{ a_position[0], a_position[1], a_position[2], a_neighbourOffset };
+	}
+
 	// A batch of queries (one cell's) handed to the render thread. Its result is published once,
 	// lock-free: Complete() flips with release semantics after Hits() is written, and every
 	// subscriber registered before completion runs exactly once on the render thread.
 	class TraceJob
 	{
 	public:
-		explicit TraceJob(std::vector<Query> a_queries);
+		explicit TraceJob(std::vector<Query> a_queries, TraceKind a_kind = TraceKind::Volume);
 		~TraceJob();
 		TraceJob(const TraceJob&) = delete;
 		TraceJob& operator=(const TraceJob&) = delete;
 
 		[[nodiscard]] std::span<const Query> Queries() const noexcept { return _queries; }
-		// One 0/1 flag per query; valid once Complete() is true and Failed() is false.
+		[[nodiscard]] TraceKind Kind() const noexcept { return _kind; }
+		// ResultWords() words per query (see TraceKind); valid once Complete() is true and Failed() is false.
 		[[nodiscard]] std::span<const std::uint32_t> Hits() const noexcept { return _hits; }
+		[[nodiscard]] std::uint32_t ResultWords() const noexcept { return _resultWords; }
 		[[nodiscard]] bool Complete() const noexcept { return _complete.load(std::memory_order_acquire); }
 		[[nodiscard]] bool Failed() const noexcept { return _failed.load(std::memory_order_acquire); }
 
@@ -60,7 +90,7 @@ namespace FasterNGIO::Gpu
 		bool Subscribe(std::function<void()> a_callback);
 
 		// Render thread only: publishes the result (or a failure) and runs the subscribers.
-		void Finish(std::span<const std::uint32_t> a_hits, bool a_failed) noexcept;
+		void Finish(std::span<const std::uint32_t> a_hits, std::uint32_t a_resultWords, bool a_failed) noexcept;
 
 		// Releases the queries once traced; they are only needed by the GPU.
 		void ReleaseQueries() noexcept;
@@ -75,7 +105,9 @@ namespace FasterNGIO::Gpu
 		[[nodiscard]] static Subscriber* ClosedList() noexcept { return reinterpret_cast<Subscriber*>(std::uintptr_t{ 1 }); }
 
 		std::vector<Query> _queries;
+		TraceKind _kind{ TraceKind::Volume };
 		std::vector<std::uint32_t> _hits;
+		std::uint32_t _resultWords{ 1 };
 		std::atomic<bool> _complete{ false };
 		std::atomic<bool> _failed{ false };
 		std::atomic<Subscriber*> _subscribers{ nullptr };

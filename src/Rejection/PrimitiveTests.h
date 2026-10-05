@@ -2,8 +2,10 @@
 
 #include "Collision/CollisionModel.h"
 #include "Rejection/HlslShim.h"
+#include "Rejection/WorldIndex.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace FasterNGIO::Rejection
 {
@@ -67,5 +69,33 @@ namespace FasterNGIO::Rejection
 	[[nodiscard]] inline bool CapsuleOverlapsCapsule(const Collision::Capsule& a_capsule, const Hlsl::float3& a_p, const Hlsl::float3& a_q, float a_radius)
 	{
 		return Hlsl::CapsuleOverlapsCapsule(a_p, a_q, a_radius, ToHlsl(a_capsule.p0), ToHlsl(a_capsule.p1), a_capsule.radius);
+	}
+
+	// Where segment [a_p, a_q] meets each kind of primitive (see GrassQueryMath.hlsli's SegmentHit).
+	[[nodiscard]] inline Hlsl::SegmentHit SegmentHitTriangle(const Collision::Triangle& a_triangle, const Hlsl::float3& a_p, const Hlsl::float3& a_q)
+	{
+		return Hlsl::SegmentHitTriangle(a_p, a_q, ToHlsl(a_triangle.vertices[0]), ToHlsl(a_triangle.vertices[1]), ToHlsl(a_triangle.vertices[2]));
+	}
+
+	[[nodiscard]] inline Hlsl::SegmentHit SegmentHitHull(const Collision::CollisionModel& a_model, const Collision::Hull& a_hull, const Hlsl::float3& a_p, const Hlsl::float3& a_q)
+	{
+		if (!SegmentOverlapsAabb(a_p, a_q, a_hull.radius, a_hull.aabbMin, a_hull.aabbMax)) {
+			return Hlsl::NoSegmentHit();
+		}
+		return Hlsl::SegmentHitHull(a_p, a_q, ModelHull{ a_model, a_hull });
+	}
+
+	[[nodiscard]] inline Hlsl::SegmentHit SegmentHitCapsule(const Collision::Capsule& a_capsule, const Hlsl::float3& a_p, const Hlsl::float3& a_q)
+	{
+		return Hlsl::SegmentHitCapsule(a_p, a_q, ToHlsl(a_capsule.p0), ToHlsl(a_capsule.p1), a_capsule.radius);
+	}
+
+	// A model-space hit on instance a_instance as a world-space one (t is unchanged by the transform).
+	[[nodiscard]] inline WorldSegmentHit ToWorldHit(std::uint32_t a_instance, const Similarity& a_worldFromModel, const Hlsl::SegmentHit& a_hit)
+	{
+		const auto n = a_worldFromModel.ApplyLinear(Collision::Float3{ a_hit.normal.x, a_hit.normal.y, a_hit.normal.z });
+		const auto length = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+		const auto scale = length > 0.0f ? 1.0f / length : 0.0f;
+		return WorldSegmentHit{ .instance = a_instance, .t = a_hit.t, .normal = { n.x * scale, n.y * scale, n.z * scale } };
 	}
 }

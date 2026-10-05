@@ -35,7 +35,7 @@ TEST(CommandLine, ParsesTheOptions)
 {
 	const Game game;
 	const auto options = Parse({ "--data", game.data, "--out", "out", "--plugins", "p.txt", "--world", "0x16BB4", "--radius", "5", "-3", "4", "--placement",
-		"vanilla", "--reject", "cpu", "--ray-height", "120.5", "--writers", "0" });
+		"vanilla", "--reject", "cpu", "--ray-height", "120.5", "--writers", "0", "--render-geometry" });
 	ASSERT_TRUE(options.has_value());
 	EXPECT_EQ(options->worlds, std::vector{ GameData::FormID{ 0x16BB4 } });
 	EXPECT_EQ(options->centerCellX, 5);
@@ -43,7 +43,10 @@ TEST(CommandLine, ParsesTheOptions)
 	EXPECT_EQ(options->radius, 4);
 	EXPECT_EQ(options->placement.mode, Grass::PlacementMode::Vanilla);
 	EXPECT_EQ(options->rejection, App::RejectChoice::Cpu);
-	EXPECT_FLOAT_EQ(options->rejectionConfig.rayHeight, 120.5f);
+	// Ray-cast values override GrassControl.ini when a run applies it.
+	EXPECT_EQ(options->rejectionOverrides.rayHeight, 120.5f);
+	EXPECT_TRUE(options->rejectionChosen);
+	EXPECT_TRUE(options->renderGeometry);
 	// At least one writer.
 	EXPECT_EQ(options->writerThreads, 1u);
 	EXPECT_FALSE(options->RunsDiagnostic());
@@ -115,4 +118,15 @@ TEST(CommandLine, TakesSeveralWorldspaces)
 	const auto all = Parse({ "--data", game.data, "--out", "out", "--world", "all" });
 	ASSERT_TRUE(all.has_value());
 	EXPECT_TRUE(all->allWorlds);
+}
+
+TEST(CommandLine, ChoosesTheNgioSettings)
+{
+	const Game game;
+	EXPECT_FALSE(Parse({ "--data", game.data, "--out", "out" })->ngioConfig.has_value());
+	EXPECT_EQ(Parse({ "--data", game.data, "--out", "out", "--ngio-config", "none" })->ngioConfig, std::filesystem::path{});
+	EXPECT_EQ(Parse({ "--data", game.data, "--out", "out", "--ngio-config", "my.ini" })->ngioConfig, std::filesystem::path("my.ini"));
+	// --grass-eval-size alone leaves the patch size to Super-dense-mode; --grass-patch-size does not.
+	EXPECT_FALSE(Parse({ "--data", game.data, "--out", "out", "--grass-eval-size", "3" })->grassPatchSizeChosen);
+	EXPECT_TRUE(Parse({ "--data", game.data, "--out", "out", "--grass-patch-size", "300" })->grassPatchSizeChosen);
 }

@@ -6,6 +6,8 @@ add_library(FasterNGIOApp STATIC
 	Diagnostics.h
 	Generate.cpp
 	Generate.h
+	NgioConfig.cpp
+	NgioConfig.h
 	Options.cpp
 	Options.h
 	WorldSetup.cpp

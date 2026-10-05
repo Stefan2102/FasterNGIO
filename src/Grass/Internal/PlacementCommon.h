@@ -125,7 +125,10 @@ namespace FasterNGIO::Grass::Internal
 	// Writes a blade's 16 words: its position relative to the cache block, height, brightness, the
 	// orientation basis (tilted to the terrain normal for fit-to-slope grass) and its height offset.
 	void EncodeBlade(BladeCandidate& a_blade, std::int32_t a_cellX, std::int32_t a_cellY, float a_x, float a_y, const TerrainSample& a_sample,
-		const GameData::GrassInfo& a_grass, float a_brightness, float a_orientation, float a_heightRandom);
+		const GameData::GrassInfo& a_grass, float a_brightness, float a_orientation, float a_heightRandom, bool a_fitToSlope);
+
+	// Rewrites a blade's scale word for NGIO's Global-grass-scale.
+	void EncodeBladeScale(BladeCandidate& a_blade, const GameData::GrassInfo& a_grass, float a_globalScale);
 
 	// What follows once a blade's position is accepted, in both placements: snap it to the cache's
 	// half-float grid, sample the terrain, apply the water and slope filters, then draw colour,
@@ -152,7 +155,7 @@ namespace FasterNGIO::Grass::Internal
 		const auto heightRandom = a_signedRandom();
 		auto& blade = a_cell.blades.emplace_back();
 		blade.groupIndex = a_groupIndex;
-		EncodeBlade(blade, a_cell.cellX, a_cell.cellY, x, y, terrain, a_grass, brightness, orientation, heightRandom);
+		EncodeBlade(blade, a_cell.cellX, a_cell.cellY, x, y, terrain, a_grass, brightness, orientation, heightRandom, a_grass.FitsToSlope());
 	}
 
 	// The two placements behind GenerateCellCandidates; a_land has a cell and heights.

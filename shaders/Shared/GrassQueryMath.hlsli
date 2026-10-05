@@ -199,4 +199,160 @@ bool CapsuleOverlapsHull(float3 p, float3 q, float r, Hull hull)
 	return false;
 }
 
+// --- Segment hits, for NGIO's grass cliffs ---------------------------------------------------------
+//
+// Where segment [p, q] meets a primitive's surface: t in [0, 1] along it, and the surface normal
+// there, facing against the segment (as Havok reports ray hits). Mesh triangles are hit from either
+// side, every time the segment crosses one; solids (hulls, capsules) are hit where the segment
+// enters them, and not at all when it starts inside, as Havok's convex ray casts behave. Convex
+// radii are not added to mesh triangles; hull planes are pushed out by theirs.
+
+struct SegmentHit
+{
+	bool hit;
+	float t;
+	float3 normal;
+};
+
+SegmentHit NoSegmentHit()
+{
+	SegmentHit result;
+	result.hit = false;
+	result.t = 0.0f;
+	result.normal = float3(0.0f, 0.0f, 0.0f);
+	return result;
+}
+
+SegmentHit MakeSegmentHit(float t, float3 normal, float3 dir)
+{
+	SegmentHit result;
+	result.hit = true;
+	result.t = t;
+	float3 n = normalize(normal);
+	result.normal = dot(n, dir) > 0.0f ? n * -1.0f : n;
+	return result;
+}
+
+SegmentHit SegmentHitTriangle(float3 p, float3 q, float3 a, float3 b, float3 c)
+{
+	float3 dir = q - p;
+	float3 e1 = b - a;
+	float3 e2 = c - a;
+	float3 h = cross(dir, e2);
+	float det = dot(e1, h);
+	if (abs(det) < 1.0e-12f) {
+		return NoSegmentHit();
+	}
+	float inv = 1.0f / det;
+	float3 s = p - a;
+	float u = dot(s, h) * inv;
+	if (u < 0.0f || u > 1.0f) {
+		return NoSegmentHit();
+	}
+	float3 qv = cross(s, e1);
+	float v = dot(dir, qv) * inv;
+	if (v < 0.0f || u + v > 1.0f) {
+		return NoSegmentHit();
+	}
+	float t = dot(e2, qv) * inv;
+	if (t < 0.0f || t > 1.0f) {
+		return NoSegmentHit();
+	}
+	return MakeSegmentHit(t, cross(e1, e2), dir);
+}
+
+// The segment against the hull's planes (pushed out by its convex radius), clipped as a convex
+// polytope.
+template <typename Hull>
+SegmentHit SegmentHitHull(float3 p, float3 q, Hull hull)
+{
+	float3 dir = q - p;
+	float enter = 0.0f;
+	float exit = 1.0f;
+	float3 enterNormal = float3(0.0f, 0.0f, 0.0f);
+	bool startsInside = true;
+	for (uint i = 0; i < hull.PlaneCount(); ++i) {
+		float4 plane = hull.Plane(i);
+		float3 n = float3(plane.x, plane.y, plane.z);
+		float start = dot(n, p) + plane.w - hull.Radius();
+		float along = dot(n, dir);
+		if (start > 0.0f) {
+			startsInside = false;
+		}
+		if (abs(along) < 1.0e-12f) {
+			if (start > 0.0f) {
+				return NoSegmentHit();
+			}
+			continue;
+		}
+		float t = -start / along;
+		if (along < 0.0f) {
+			if (t > enter) {
+				enter = t;
+				enterNormal = n;
+			}
+		} else {
+			exit = min(exit, t);
+		}
+		if (enter > exit) {
+			return NoSegmentHit();
+		}
+	}
+	if (startsInside) {
+		return NoSegmentHit();
+	}
+	return MakeSegmentHit(enter, enterNormal, dir);
+}
+
+// The segment against capsule [a, b] x radius (a sphere when a == b).
+SegmentHit SegmentHitCapsule(float3 p, float3 q, float3 a, float3 b, float radius)
+{
+	if (SegmentSegmentDistanceSq(p, p, a, b) <= radius * radius) {
+		return NoSegmentHit();
+	}
+	float3 dir = q - p;
+	float3 ba = b - a;
+	float3 oa = p - a;
+	float baba = dot(ba, ba);
+	float bard = dot(ba, dir);
+	float baoa = dot(ba, oa);
+	float dirdir = dot(dir, dir);
+	float best = 2.0f;
+	float3 normal = float3(0.0f, 0.0f, 0.0f);
+	// The side: |(x - a) x ba|^2 = radius^2 |ba|^2, between the ends.
+	float k2 = baba * dirdir - bard * bard;
+	if (k2 > 1.0e-12f) {
+		float k1 = baba * dot(dir, oa) - baoa * bard;
+		float k0 = baba * dot(oa, oa) - baoa * baoa - radius * radius * baba;
+		float h = k1 * k1 - k2 * k0;
+		if (h >= 0.0f) {
+			float t = (-k1 - sqrt(h)) / k2;
+			float y = baoa + t * bard;
+			if (t >= 0.0f && t <= 1.0f && y >= 0.0f && y <= baba) {
+				best = t;
+				normal = (oa + dir * t) - ba * (y / baba);
+			}
+		}
+	}
+	// The end spheres.
+	for (uint end = 0; end < 2; ++end) {
+		float3 centre = end == 0 ? a : b;
+		float3 oc = p - centre;
+		float k1 = dot(dir, oc);
+		float k0 = dot(oc, oc) - radius * radius;
+		float h = k1 * k1 - dirdir * k0;
+		if (h >= 0.0f && dirdir > 1.0e-12f) {
+			float t = (-k1 - sqrt(h)) / dirdir;
+			if (t >= 0.0f && t <= 1.0f && t < best) {
+				best = t;
+				normal = oc + dir * t;
+			}
+		}
+	}
+	if (best > 1.0f) {
+		return NoSegmentHit();
+	}
+	return MakeSegmentHit(best, normal, dir);
+}
+
 #endif

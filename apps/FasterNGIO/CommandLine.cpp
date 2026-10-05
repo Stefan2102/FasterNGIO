@@ -107,9 +107,14 @@ namespace FasterNGIO::App
 			"  --overwrite                   Rebuild cache files that already exist\n"
 			"\n"
 			"Grass-in-object rejection (NGIO [RayCastConfig] equivalents):\n"
+			"  --ngio-config <file|none>     NGIO's GrassControl.ini, default Data/SKSE/Plugins/GrassControl.ini when it\n"
+			"                                exists (with the *_NGIO.ini files in Data). Its ray-cast, texture, ignore,\n"
+			"                                grass cliff and placement settings apply; the options here override them\n"
 			"  --reject <auto|gpu|cpu|none>  Rejection backend. auto (default) uses the GPU when it supports\n"
 			"                                ray tracing with bindless descriptor heaps, else the CPU BVH\n"
 			"  --gpu-api <d3d12|vulkan>      Ray-tracing API, default d3d12 on Windows, vulkan elsewhere\n"
+			"  --render-geometry             Experimental: objects with collision reject by their render meshes\n"
+			"                                (visible, non-decal shapes) instead of their collision\n"
 			"  --validate-cpu                Also run the brute-force CPU reference and compare\n"
 			"  --gpu-debug                   Enable the D3D12 debug layer / Vulkan validation\n"
 			"  --ray-height <f>              Ray-cast-height, default 150\n"
@@ -131,8 +136,6 @@ namespace FasterNGIO::App
 	std::optional<GenerateOptions> ParseCommandLine(std::span<const std::string_view> a_args)
 	{
 		GenerateOptions options;
-		// --grass-eval-size sets the patch size too, unless --grass-patch-size gave one.
-		bool explicitGrassPatchSize = false;
 		for (std::size_t i = 0; i < a_args.size(); ++i) {
 			const auto arg = a_args[i];
 			const auto requireValue = [&](std::string_view a_name) -> std::string_view {
@@ -176,10 +179,10 @@ namespace FasterNGIO::App
 				options.minGrassSizeOverride = ParseU32(requireValue(arg));
 			} else if (arg == "--grass-patch-size") {
 				options.placement.grassPatchSize = ParseU32(requireValue(arg));
-				explicitGrassPatchSize = true;
+				options.grassPatchSizeChosen = true;
 			} else if (arg == "--grass-eval-size") {
 				options.placement.grassEvalSize = ParseU32(requireValue(arg));
-				if (!explicitGrassPatchSize) {
+				if (!options.grassPatchSizeChosen) {
 					options.placement.grassPatchSize = options.placement.grassEvalSize << 7;
 				}
 			} else if (arg == "--alpha-threshold") {
@@ -203,6 +206,7 @@ namespace FasterNGIO::App
 				}
 #endif
 				options.rejection = *choice;
+				options.rejectionChosen = true;
 			} else if (arg == "--gpu-api") {
 				const auto value = requireValue(arg);
 #if FASTERNGIO_HAS_GPU
@@ -221,6 +225,8 @@ namespace FasterNGIO::App
 				(void)value;
 				throw std::invalid_argument("this build has no GPU support");
 #endif
+			} else if (arg == "--render-geometry") {
+				options.renderGeometry = true;
 			} else if (arg == "--validate-cpu") {
 				options.validateCpu = true;
 			} else if (arg == "--gpu-debug") {
@@ -230,19 +236,19 @@ namespace FasterNGIO::App
 				throw std::invalid_argument("this build has no GPU support");
 #endif
 			} else if (arg == "--ray-height") {
-				options.rejectionConfig.rayHeight = ParseFloat(requireValue(arg));
+				options.rejectionOverrides.rayHeight = ParseFloat(requireValue(arg));
 			} else if (arg == "--ray-depth") {
-				options.rejectionConfig.rayDepth = ParseFloat(requireValue(arg));
+				options.rejectionOverrides.rayDepth = ParseFloat(requireValue(arg));
 			} else if (arg == "--ray-mode") {
 				const auto mode = ParseU32(requireValue(arg));
 				if (mode > 1) {
 					throw std::invalid_argument("expected --ray-mode 0 (ray) or 1 (capsule); NGIO's box mode (2) is not implemented");
 				}
-				options.rejectionConfig.mode = static_cast<Rejection::QueryMode>(mode);
+				options.rejectionOverrides.mode = static_cast<Rejection::QueryMode>(mode);
 			} else if (arg == "--ray-width") {
-				options.rejectionConfig.rayWidth = ParseFloat(requireValue(arg));
+				options.rejectionOverrides.rayWidth = ParseFloat(requireValue(arg));
 			} else if (arg == "--ray-width-mult") {
-				options.rejectionConfig.rayWidthMultiplier = ParseFloat(requireValue(arg));
+				options.rejectionOverrides.rayWidthMultiplier = ParseFloat(requireValue(arg));
 			} else if (arg == "--placement") {
 				const auto mode = ParsePlacement(requireValue(arg));
 				if (!mode) {
@@ -260,6 +266,9 @@ namespace FasterNGIO::App
 				options.gameIniDirectory = std::filesystem::path(requireValue(arg));
 			} else if (arg == "--no-game-ini") {
 				options.readGameIni = false;
+			} else if (arg == "--ngio-config") {
+				const auto value = requireValue(arg);
+				options.ngioConfig = value == "none" ? std::filesystem::path{} : std::filesystem::path(value);
 			} else if (arg == "--smooth-warp") {
 				options.placement.smooth.warpAmplitude = ParseFloat(requireValue(arg));
 				options.placement.smooth.warpWavelength = ParseFloat(requireValue(arg));

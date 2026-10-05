@@ -301,6 +301,78 @@ namespace FasterNGIO::Rejection
 		});
 	}
 
+	VolumeHits CpuBvh::ClassifyCapsule(const Float3& a_p, const Float3& a_q, float a_radius) const
+	{
+		VolumeHits hits;
+		const bool worldHasCliffs = _world.Stats().cliffInstances != 0;
+		const auto& instances = _world.Instances();
+		(void)Traverse(_instanceNodes, MakeQueryBox(ToHlsl(a_p), ToHlsl(a_q), a_radius), [&](std::uint32_t a_first, std::uint32_t a_count) {
+			for (auto i = a_first; i < a_first + a_count; ++i) {
+				const auto index = _instanceOrder[i];
+				const auto& instance = instances[index];
+				const bool known = (instance.role == kRoleOrdinary && hits.ordinary) || (instance.role == kRoleCliff && hits.cliff) ||
+				                   (instance.role == kRolePartIgnored && hits.partIgnored != kNoInstance);
+				if (known || !CapsuleHitsInstance(instance, a_p, a_q, a_radius)) {
+					continue;
+				}
+				switch (instance.role) {
+				case kRoleOrdinary:
+					hits.ordinary = true;
+					break;
+				case kRoleCliff:
+					hits.cliff = true;
+					break;
+				case kRolePartIgnored:
+					hits.partIgnored = index;
+					break;
+				}
+				if (hits.ordinary && (hits.cliff || !worldHasCliffs)) {
+					return true;
+				}
+			}
+			return false;
+		});
+		return hits;
+	}
+
+	void CpuBvh::SegmentHitsWorld(const Float3& a_p, const Float3& a_q, std::vector<WorldSegmentHit>& a_hits) const
+	{
+		const auto& instances = _world.Instances();
+		(void)Traverse(_instanceNodes, MakeQueryBox(ToHlsl(a_p), ToHlsl(a_q), 0.0f), [&](std::uint32_t a_first, std::uint32_t a_count) {
+			for (auto i = a_first; i < a_first + a_count; ++i) {
+				const auto index = _instanceOrder[i];
+				const auto& instance = instances[index];
+				const auto& bvh = _models[instance.model];
+				const auto& model = _world.Models()[instance.model].collision;
+				const auto p = ToHlsl(instance.modelFromWorld.Apply(a_p));
+				const auto q = ToHlsl(instance.modelFromWorld.Apply(a_q));
+				(void)Traverse(bvh.nodes, MakeQueryBox(p, q, 0.0f), [&](std::uint32_t a_firstPrimitive, std::uint32_t a_primitiveCount) {
+					for (auto j = a_firstPrimitive; j < a_firstPrimitive + a_primitiveCount; ++j) {
+						const auto reference = bvh.primitives[j];
+						const auto primitive = reference & kIndexMask;
+						Hlsl::SegmentHit hit{};
+						switch (static_cast<PrimitiveKind>(reference >> kKindShift)) {
+						case PrimitiveKind::Triangle:
+							hit = SegmentHitTriangle(model.triangles[primitive], p, q);
+							break;
+						case PrimitiveKind::Hull:
+							hit = SegmentHitHull(model, model.hulls[primitive], p, q);
+							break;
+						case PrimitiveKind::Capsule:
+							hit = SegmentHitCapsule(model.capsules[primitive], p, q);
+							break;
+						}
+						if (hit.hit) {
+							a_hits.push_back(ToWorldHit(index, instance.worldFromModel, hit));
+						}
+					}
+					return false;
+				});
+			}
+			return false;
+		});
+	}
+
 	std::vector<std::uint32_t> CpuBvh::RejectCell(const Grass::CellCandidates& a_cell, std::span<const QueryShape> a_shapes) const
 	{
 		std::vector<std::uint32_t> rejected((a_cell.blades.size() + 31) / 32, 0u);

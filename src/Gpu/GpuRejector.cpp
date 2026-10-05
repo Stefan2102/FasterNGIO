@@ -68,6 +68,9 @@ namespace FasterNGIO::Gpu
 		}
 
 		static_assert(sizeof(Layout::RootConstants) % sizeof(std::uint32_t) == 0, "root constants are pushed as 32-bit values");
+		static_assert(Layout::kVolumeRoleWords == kVolumeRoleWords && Layout::kCliffResultWords == kCliffResultWords);
+		static_assert(Rejection::kRoleOrdinary == Layout::kRoleOrdinary && Rejection::kRoleCliff == Layout::kRoleCliff &&
+					  Rejection::kRolePartIgnored == Layout::kRolePartIgnored);
 
 		// ---- GPU resources ------------------------------------------------------------------
 
@@ -114,6 +117,9 @@ namespace FasterNGIO::Gpu
 			};
 			std::vector<Pending> pending;
 			std::uint64_t queryCount{ 0 };
+			TraceKind kind{ TraceKind::Volume };
+			// Result words per query.
+			std::uint32_t resultWords{ 1 };
 			bool busy{ false };
 		};
 
@@ -133,9 +139,14 @@ namespace FasterNGIO::Gpu
 			rhi::PipelineLayoutHandle layout{};
 			rhi::PipelineHandle pipeline{};
 			rhi::RayTracingShaderTableRegion rayGen{};
+			rhi::RayTracingShaderTableRegion cliffRayGen{};
 			rhi::RayTracingShaderTableRegion miss{};
 			rhi::RayTracingShaderTableRegion hit{};
+			std::uint32_t cliffHitGroupOffset{ 0 };
 			std::uint32_t tlasSrv{ 0 };
+			// The world's roles beyond kRoleOrdinary, and the per-instance info buffer.
+			std::uint32_t roles{ 0 };
+			std::uint32_t instanceInfoSrv{ 0 };
 			float segmentLength{ 0.0f };
 			std::uint32_t debugCandidate{ Layout::kNoDebugCandidate };
 			std::shared_ptr<FrameWork> current;
@@ -225,26 +236,31 @@ namespace FasterNGIO::Gpu
 						commands.CopyBufferRegion(frame.debug->GetHandle(), 0, frame.debugZero.resource->GetHandle(), 0, Layout::kDebugBufferBytes);
 						GlobalBarrier(commands, Sync::Copy, Access::CopyDest, Sync::Raytracing, Access::UnorderedAccess);
 					}
+					const bool cliff = frame.kind == TraceKind::Cliff;
 					const Layout::RootConstants constants{
 						.tlas = context.tlasSrv,
 						.candidates = frame.candidatesSrv,
 						.output = frame.outputUav,
 						.candidateCount = static_cast<std::uint32_t>(frame.queryCount),
 						.segmentLength = context.segmentLength,
-						.debugCandidate = debug ? context.debugCandidate : Layout::kNoDebugCandidate,
+						.debugCandidate = debug && !cliff ? context.debugCandidate : Layout::kNoDebugCandidate,
 						.debugBuffer = frame.debugUav,
+						.pass = cliff ? Layout::kPassCliff : Layout::kPassVolume,
+						.roles = context.roles,
+						.instanceInfo = context.instanceInfoSrv,
+						.cliffHitGroupOffset = context.cliffHitGroupOffset,
 					};
 					const auto words = std::bit_cast<std::array<std::uint32_t, kRootConstantCount>>(constants);
 					commands.PushConstants(rhi::ShaderStage::All, 0, 0, 0, kRootConstantCount, words.data());
 					rhi::RayTracingDispatchDesc dispatch{};
-					dispatch.rayGenerationShaderTable = context.rayGen;
+					dispatch.rayGenerationShaderTable = cliff ? context.cliffRayGen : context.rayGen;
 					dispatch.missShaderTable = context.miss;
 					dispatch.hitGroupTable = context.hit;
 					dispatch.width = static_cast<std::uint32_t>(frame.queryCount);
 					commands.TraceRays(dispatch);
 					GlobalBarrier(commands, Sync::Raytracing, Access::UnorderedAccess, Sync::Copy, Access::CopySource);
 					commands.CopyBufferRegion(frame.readback.resource->GetHandle(), 0, frame.output->GetHandle(), 0,
-						frame.queryCount * sizeof(std::uint32_t));
+						frame.queryCount * frame.resultWords * sizeof(std::uint32_t));
 					if (debug) {
 						commands.CopyBufferRegion(frame.debugReadback.resource->GetHandle(), 0, frame.debug->GetHandle(), 0, Layout::kDebugBufferBytes);
 					}
@@ -392,8 +408,10 @@ namespace FasterNGIO::Gpu
 			_passContext->layout = _layout->GetHandle();
 			_passContext->pipeline = _pipeline->GetHandle();
 			_passContext->rayGen = { _shaderTable.resource->GetHandle(), _rayGenOffset, _recordStride, _recordStride };
-			_passContext->miss = { _shaderTable.resource->GetHandle(), _missOffset, _recordStride, _recordStride };
-			_passContext->hit = { _shaderTable.resource->GetHandle(), _hitOffset, _recordStride * _hitCount, _recordStride };
+			_passContext->cliffRayGen = { _shaderTable.resource->GetHandle(), _cliffRayGenOffset, _recordStride, _recordStride };
+			_passContext->miss = { _shaderTable.resource->GetHandle(), _missOffset, _recordStride * 2, _recordStride };
+			_passContext->hit = { _shaderTable.resource->GetHandle(), _hitOffset, _recordStride * _hitCount * 2, _recordStride };
+			_passContext->cliffHitGroupOffset = _hitCount;
 			_passContext->segmentLength = _desc.segmentLength;
 			if (const auto debugCandidate = DebugCandidate()) {
 				_passContext->debugCandidate = *debugCandidate;
@@ -424,6 +442,7 @@ namespace FasterNGIO::Gpu
 			_tlasStorage.Reset();
 			_tlasScratch.Reset();
 			_tlasInstances = {};
+			_instanceInfo = {};
 			_blasScratch.Reset();
 			_shaderTable = {};
 			_pipeline.Reset();
@@ -523,31 +542,46 @@ namespace FasterNGIO::Gpu
 			const rhi::ShaderBinary binary{ _shaderBinary.data(), static_cast<std::uint32_t>(_shaderBinary.size()) };
 			rhi::SubobjShader shaders[] = {
 				{ rhi::ShaderStage::RayGen, binary, "GrassRayGen" },
+				{ rhi::ShaderStage::RayGen, binary, "CliffRayGen" },
 				{ rhi::ShaderStage::Miss, binary, "GrassMiss" },
+				{ rhi::ShaderStage::Miss, binary, "CliffMiss" },
 				{ rhi::ShaderStage::ClosestHit, binary, "GrassClosestHit" },
+				{ rhi::ShaderStage::AnyHit, binary, "CliffAnyHit" },
 				{ rhi::ShaderStage::Intersection, binary, "TriangleIntersection" },
 				{ rhi::ShaderStage::Intersection, binary, "HullIntersection" },
 				{ rhi::ShaderStage::Intersection, binary, "CapsuleIntersection" },
 			};
+			// Groups 0-3 are general (raygens, misses); then the volume pass's hit groups and the cliff
+			// pass's, each in primitive-kind order.
+			constexpr std::uint32_t kVolumeHitGroups = 4;
+			constexpr std::uint32_t kCliffHitGroups = kVolumeHitGroups + kPrimitiveKindCount;
 			rhi::RayTracingShaderGroupDesc groups[] = {
 				{ .type = rhi::RayTracingShaderGroupType::General, .name = "GrassRayGen", .generalShader = "GrassRayGen" },
+				{ .type = rhi::RayTracingShaderGroupType::General, .name = "CliffRayGen", .generalShader = "CliffRayGen" },
 				{ .type = rhi::RayTracingShaderGroupType::General, .name = "GrassMiss", .generalShader = "GrassMiss" },
+				{ .type = rhi::RayTracingShaderGroupType::General, .name = "CliffMiss", .generalShader = "CliffMiss" },
 				{ .type = rhi::RayTracingShaderGroupType::ProceduralHitGroup, .name = "TriangleHitGroup", .closestHitShader = "GrassClosestHit", .intersectionShader = "TriangleIntersection" },
 				{ .type = rhi::RayTracingShaderGroupType::ProceduralHitGroup, .name = "HullHitGroup", .closestHitShader = "GrassClosestHit", .intersectionShader = "HullIntersection" },
 				{ .type = rhi::RayTracingShaderGroupType::ProceduralHitGroup, .name = "CapsuleHitGroup", .closestHitShader = "GrassClosestHit", .intersectionShader = "CapsuleIntersection" },
+				{ .type = rhi::RayTracingShaderGroupType::ProceduralHitGroup, .name = "CliffTriangleHitGroup", .anyHitShader = "CliffAnyHit", .intersectionShader = "TriangleIntersection" },
+				{ .type = rhi::RayTracingShaderGroupType::ProceduralHitGroup, .name = "CliffHullHitGroup", .anyHitShader = "CliffAnyHit", .intersectionShader = "HullIntersection" },
+				{ .type = rhi::RayTracingShaderGroupType::ProceduralHitGroup, .name = "CliffCapsuleHitGroup", .anyHitShader = "CliffAnyHit", .intersectionShader = "CapsuleIntersection" },
 			};
 			rhi::SubobjRayTracingPipeline pipeline{};
 			pipeline.globalLayout = _layout->GetHandle();
 			pipeline.shaders = { shaders, static_cast<std::uint32_t>(std::size(shaders)) };
 			pipeline.shaderGroups = { groups, static_cast<std::uint32_t>(std::size(groups)) };
-			pipeline.shaderConfig.maxPayloadSizeInBytes = 4;
-			pipeline.shaderConfig.maxAttributeSizeInBytes = 4;
+			// The volume payload (two words) is the larger; hit attributes carry a float3 normal.
+			pipeline.shaderConfig.maxPayloadSizeInBytes = 8;
+			pipeline.shaderConfig.maxAttributeSizeInBytes = 12;
 			pipeline.pipelineConfig.maxTraceRecursionDepth = 1;
 			const rhi::PipelineStreamItem items[] = { rhi::Make(pipeline) };
 			Check(_device->CreatePipeline(items, 1, _pipeline), "ray-tracing pipeline");
 
-			// Shader table: raygen, miss, then hit records for every non-empty subset of the three
-			// kinds, each subset's records in kind order (matching the BLAS geometry order).
+			// Shader table: the two raygens, the two misses, then hit records for every non-empty subset
+			// of the three kinds, each subset's records in kind order (matching the BLAS geometry
+			// order); the cliff pass's records repeat the layout after the volume pass's, so its rays
+			// add _hitCount to reach them.
 			const auto handleSize = _rayTracing.shaderGroupHandleSize;
 			std::vector<std::byte> handles(static_cast<std::size_t>(handleSize) * std::size(groups));
 			Check(_device->GetRayTracingShaderGroupHandles(_pipeline->GetHandle(), 0, static_cast<std::uint32_t>(std::size(groups)), handles.data(),
@@ -556,27 +590,33 @@ namespace FasterNGIO::Gpu
 			_recordStride = rhi::AlignRayTracingShaderRecordSize(handleSize, _rayTracing.shaderTableStrideAlignment);
 			const auto baseAlignment = _rayTracing.shaderGroupBaseAlignment;
 			_rayGenOffset = 0;
-			_missOffset = AlignUp(_rayGenOffset + _recordStride, baseAlignment);
-			_hitOffset = AlignUp(_missOffset + _recordStride, baseAlignment);
-			std::vector<std::uint32_t> hitRecords;
+			_cliffRayGenOffset = AlignUp(_rayGenOffset + _recordStride, baseAlignment);
+			_missOffset = AlignUp(_cliffRayGenOffset + _recordStride, baseAlignment);
+			_hitOffset = AlignUp(_missOffset + _recordStride * 2, baseAlignment);
+			std::vector<std::uint32_t> hitKinds;
 			for (std::uint32_t mask = 1; mask < (1u << kPrimitiveKindCount); ++mask) {
-				_subsetBase[mask] = static_cast<std::uint32_t>(hitRecords.size());
+				_subsetBase[mask] = static_cast<std::uint32_t>(hitKinds.size());
 				for (std::uint32_t kind = 0; kind < kPrimitiveKindCount; ++kind) {
 					if (mask & (1u << kind)) {
-						hitRecords.push_back(2 + kind);
+						hitKinds.push_back(kind);
 					}
 				}
 			}
-			_hitCount = static_cast<std::uint32_t>(hitRecords.size());
-			const auto tableBytes = _hitOffset + _recordStride * _hitCount;
+			_hitCount = static_cast<std::uint32_t>(hitKinds.size());
+			// TraceRay's hit-group offset has four bits.
+			static_assert((1u << kPrimitiveKindCount) / 2 * kPrimitiveKindCount < 16);
+			const auto tableBytes = _hitOffset + _recordStride * _hitCount * 2;
 			_shaderTable = CreateMapped(tableBytes, rhi::HeapType::Upload, "FasterNGIO shader table");
 			const auto writeRecord = [&](std::uint64_t a_offset, std::uint32_t a_group) {
 				rhi::WriteRayTracingShaderRecord(_shaderTable.mapped + a_offset, _recordStride, handles.data() + a_group * handleSize, handleSize);
 			};
 			writeRecord(_rayGenOffset, 0);
-			writeRecord(_missOffset, 1);
+			writeRecord(_cliffRayGenOffset, 1);
+			writeRecord(_missOffset, 2);
+			writeRecord(_missOffset + _recordStride, 3);
 			for (std::uint32_t i = 0; i < _hitCount; ++i) {
-				writeRecord(_hitOffset + i * _recordStride, hitRecords[i]);
+				writeRecord(_hitOffset + i * _recordStride, kVolumeHitGroups + hitKinds[i]);
+				writeRecord(_hitOffset + (_hitCount + i) * _recordStride, kCliffHitGroups + hitKinds[i]);
 			}
 		}
 
@@ -638,6 +678,8 @@ namespace FasterNGIO::Gpu
 			}
 			_models.clear();
 			_freeDescriptors.push_back(_tlasSrv);
+			_freeDescriptors.push_back(_instanceInfoSrv);
+			_instanceInfo = {};
 			_tlas = {};
 			_tlasStorage = {};
 			_tlasInstances = {};
@@ -786,11 +828,15 @@ namespace FasterNGIO::Gpu
 		// SRV. Returns the instance count.
 		[[nodiscard]] std::size_t BuildTlas(std::span<const Rejection::Instance> a_instances)
 		{
-			// Every instance is visible to the shader's single ray mask.
-			constexpr std::uint8_t kInstanceMask = 0xFF;
+			// Each instance's mask is its role, so the volume pass can trace roles apart; per TLAS
+			// instance, the shaders also read its WorldIndex index, role and steepness.
 			std::vector<rhi::PackedRayTracingInstanceDesc> packed;
+			std::vector<std::uint32_t> info;
 			packed.reserve(a_instances.size());
-			for (const auto& instance : a_instances) {
+			info.reserve(a_instances.size() * 2);
+			std::uint32_t roles = 0;
+			for (std::uint32_t index = 0; index < a_instances.size(); ++index) {
+				const auto& instance = a_instances[index];
 				const auto& model = _models[instance.model];
 				if (!model.blas) {
 					continue;
@@ -798,7 +844,10 @@ namespace FasterNGIO::Gpu
 				rhi::RayTracingInstanceDesc desc{};
 				std::memcpy(desc.transform, instance.worldFromModel.m, sizeof(desc.transform));
 				desc.instanceID = model.srv;
-				desc.instanceMask = kInstanceMask;
+				desc.instanceMask = static_cast<std::uint8_t>(instance.role);
+				roles |= instance.role == Rejection::kRoleOrdinary ? 0u : static_cast<std::uint32_t>(instance.role);
+				info.push_back(index);
+				info.push_back(static_cast<std::uint32_t>(instance.role) | (instance.steep ? Layout::kInstanceSteep : 0u));
 				desc.instanceContributionToHitGroupIndex = _subsetBase[model.kindMask];
 				desc.flags = rhi::RTInstance_ForceOpaque;
 				packed.push_back(rhi::PackRayTracingInstanceDesc(desc, model.blasAddress));
@@ -847,6 +896,16 @@ namespace FasterNGIO::Gpu
 			srv.accel.sizeBytes = tlasBytes;
 			// The view addresses the TLAS itself; BasicRHI treats an empty resource as a null view.
 			Check(_device->CreateShaderResourceView({ _heap->GetHandle(), _tlasSrv }, _tlasStorage->GetHandle(), srv), "TLAS SRV");
+
+			if (info.empty()) {
+				info.assign(2, 0u);
+			}
+			_instanceInfo = CreateMapped(info.size() * sizeof(std::uint32_t), rhi::HeapType::Upload, "FasterNGIO instance info");
+			std::memcpy(_instanceInfo.mapped, info.data(), info.size() * sizeof(std::uint32_t));
+			_instanceInfoSrv = AllocateDescriptor();
+			WriteStructuredSrv(_instanceInfoSrv, _instanceInfo.resource, static_cast<std::uint32_t>(info.size() / 2), 2 * sizeof(std::uint32_t));
+			_passContext->instanceInfoSrv = _instanceInfoSrv;
+			_passContext->roles = roles;
 			return packed.size();
 		}
 
@@ -891,20 +950,23 @@ namespace FasterNGIO::Gpu
 			return *_frames.back();
 		}
 
-		// Sizes a frame set for its queries and concatenates the jobs' candidates.
+		// Sizes a frame set for its queries (all of one kind) and concatenates the jobs' candidates.
 		void FillFrameSet(FrameSet& a_frame, std::vector<std::shared_ptr<TraceJob>>& a_jobs)
 		{
 			std::uint64_t queries = 0;
 			for (const auto& job : a_jobs) {
 				queries += job->Queries().size();
 			}
+			a_frame.kind = a_jobs.front()->Kind();
+			a_frame.resultWords = a_frame.kind == TraceKind::Cliff ? kCliffResultWords : (_passContext->roles != 0 ? kVolumeRoleWords : 1u);
+			const auto words = queries * a_frame.resultWords;
 
 			if (a_frame.candidates.bytes < queries * sizeof(Query)) {
 				a_frame.candidates = CreateMapped(queries * sizeof(Query) * 3 / 2, rhi::HeapType::Upload, "FasterNGIO candidates");
 				WriteStructuredSrv(a_frame.candidatesSrv, a_frame.candidates.resource, static_cast<std::uint32_t>(a_frame.candidates.bytes / sizeof(Query)), sizeof(Query));
 			}
-			if (a_frame.outputCapacity < queries) {
-				a_frame.outputCapacity = queries * 3 / 2;
+			if (a_frame.outputCapacity < words) {
+				a_frame.outputCapacity = words * 3 / 2;
 				const auto bytes = a_frame.outputCapacity * sizeof(std::uint32_t);
 				a_frame.output.Reset();
 				Check(_device->CreateCommittedResource(
@@ -970,7 +1032,7 @@ namespace FasterNGIO::Gpu
 			}
 			const auto* hits = reinterpret_cast<const std::uint32_t*>(a_frame.readback.mapped);
 			for (auto& pending : a_frame.pending) {
-				pending.job->Finish(std::span(hits + pending.offset, pending.count), false);
+				pending.job->Finish(std::span(hits + pending.offset * a_frame.resultWords, pending.count * a_frame.resultWords), a_frame.resultWords, false);
 			}
 			_statQueries.fetch_add(a_frame.queryCount, std::memory_order_relaxed);
 			a_frame.pending.clear();
@@ -1003,12 +1065,20 @@ namespace FasterNGIO::Gpu
 						}
 					}
 					if (_worldReady && !waiting.empty()) {
+						// One kind per dispatch: the oldest job's, gathered from the whole queue (cells post
+						// volume and cliff jobs interleaved); the others keep their order.
 						std::vector<std::shared_ptr<TraceJob>> jobs;
 						std::uint64_t queries = 0;
-						while (!waiting.empty() && (jobs.empty() || queries + waiting.front()->Queries().size() <= _maxQueriesPerFrame)) {
-							queries += waiting.front()->Queries().size();
-							jobs.push_back(std::move(waiting.front()));
-							waiting.pop_front();
+						const auto kind = waiting.front()->Kind();
+						for (auto it = waiting.begin(); it != waiting.end();) {
+							const auto size = (*it)->Queries().size();
+							if ((*it)->Kind() != kind || (!jobs.empty() && queries + size > _maxQueriesPerFrame)) {
+								++it;
+								continue;
+							}
+							queries += size;
+							jobs.push_back(std::move(*it));
+							it = waiting.erase(it);
 						}
 						auto& frame = AcquireFrameSet();
 						FillFrameSet(frame, jobs);
@@ -1033,17 +1103,17 @@ namespace FasterNGIO::Gpu
 			// Fail every job still owed a result so no consumer waits forever.
 			for (auto& [frameNumber, frame] : _inFlight) {
 				for (auto& pending : frame->pending) {
-					pending.job->Finish({}, true);
+					pending.job->Finish({}, 1, true);
 				}
 			}
 			_inFlight.clear();
 			for (auto& job : waiting) {
-				job->Finish({}, true);
+				job->Finish({}, 1, true);
 			}
 			while (!_stopping.load(std::memory_order_acquire)) {
 				while (auto command = _inbox.TryPop()) {
 					if (auto* job = std::get_if<std::shared_ptr<TraceJob>>(&*command)) {
-						(*job)->Finish({}, true);
+						(*job)->Finish({}, 1, true);
 					}
 				}
 				const auto seen = _signal.load(std::memory_order_acquire);
@@ -1085,6 +1155,7 @@ namespace FasterNGIO::Gpu
 		MappedBuffer _shaderTable;
 		std::uint64_t _recordStride{ 0 };
 		std::uint64_t _rayGenOffset{ 0 };
+		std::uint64_t _cliffRayGenOffset{ 0 };
 		std::uint64_t _missOffset{ 0 };
 		std::uint64_t _hitOffset{ 0 };
 		std::uint32_t _hitCount{ 0 };
@@ -1102,6 +1173,8 @@ namespace FasterNGIO::Gpu
 		rhi::ResourcePtr _tlasScratch;
 		std::uint64_t _tlasScratchBytes{ 0 };
 		std::uint32_t _tlasSrv{ 0 };
+		MappedBuffer _instanceInfo;
+		std::uint32_t _instanceInfoSrv{ 0 };
 		bool _worldReady{ false };
 		std::vector<std::unique_ptr<FrameSet>> _frames;
 		std::map<std::uint64_t, FrameSet*> _inFlight;
@@ -1118,8 +1191,40 @@ namespace FasterNGIO::Gpu
 		return queries;
 	}
 
-	TraceJob::TraceJob(std::vector<Query> a_queries) :
-		_queries(std::move(a_queries))
+	Rejection::VolumeHits ReadVolumeHits(std::span<const std::uint32_t> a_words)
+	{
+		Rejection::VolumeHits hits;
+		hits.ordinary = (a_words[0] & Layout::kRoleOrdinary) != 0;
+		hits.cliff = (a_words[0] & Layout::kRoleCliff) != 0;
+		hits.partIgnored = (a_words[0] & Layout::kRolePartIgnored) != 0 ? a_words[1] : Rejection::kNoInstance;
+		return hits;
+	}
+
+	Rejection::CliffRays ReadCliffRays(std::span<const std::uint32_t> a_words)
+	{
+		Rejection::CliffRays rays;
+		rays.upClosest = a_words[Layout::kCliffWordUpClosest];
+		rays.cliffT = std::bit_cast<float>(a_words[Layout::kCliffWordCliffT]);
+		// The shader reports the normal facing down the ray; NGIO negates it to face up the cliff.
+		rays.cliffNormal = {
+			-std::bit_cast<float>(a_words[Layout::kCliffWordNormal]),
+			-std::bit_cast<float>(a_words[Layout::kCliffWordNormal + 1]),
+			-std::bit_cast<float>(a_words[Layout::kCliffWordNormal + 2]),
+		};
+		if (rays.upClosest == Rejection::kNoInstance) {
+			rays.cliffT = -1.0f;
+		}
+		for (std::size_t i = 0; i < rays.neighbours.size(); ++i) {
+			rays.neighbours[i] = Rejection::CliffRay{
+				.closest = a_words[Layout::kCliffWordNeighbours + i * 2],
+				.highestT = std::bit_cast<float>(a_words[Layout::kCliffWordNeighbours + i * 2 + 1]),
+			};
+		}
+		return rays;
+	}
+
+	TraceJob::TraceJob(std::vector<Query> a_queries, TraceKind a_kind) :
+		_queries(std::move(a_queries)), _kind(a_kind)
 	{}
 
 	TraceJob::~TraceJob()
@@ -1147,9 +1252,10 @@ namespace FasterNGIO::Gpu
 		return true;
 	}
 
-	void TraceJob::Finish(std::span<const std::uint32_t> a_hits, bool a_failed) noexcept
+	void TraceJob::Finish(std::span<const std::uint32_t> a_hits, std::uint32_t a_resultWords, bool a_failed) noexcept
 	{
 		_hits.assign(a_hits.begin(), a_hits.end());
+		_resultWords = a_resultWords;
 		_failed.store(a_failed, std::memory_order_release);
 		_complete.store(true, std::memory_order_release);
 		auto* node = _subscribers.exchange(ClosedList(), std::memory_order_acq_rel);

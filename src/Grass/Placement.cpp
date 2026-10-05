@@ -393,7 +393,7 @@ namespace FasterNGIO::Grass
 		}
 
 		void EncodeBlade(BladeCandidate& a_blade, std::int32_t a_cellX, std::int32_t a_cellY, float a_x, float a_y, const TerrainSample& a_sample,
-			const GameData::GrassInfo& a_grass, float a_brightness, float a_orientation, float a_heightRandom)
+			const GameData::GrassInfo& a_grass, float a_brightness, float a_orientation, float a_heightRandom, bool a_fitToSlope)
 		{
 			auto& words = a_blade.words;
 			words[0] = FloatToHalfBits(a_x - BlockBase(a_cellX));
@@ -406,7 +406,7 @@ namespace FasterNGIO::Grass
 			float basis0[3]{ sinTheta, -cosTheta, 0.0f };
 			float basis1[3]{ cosTheta, sinTheta, 0.0f };
 			float basis2[3]{ 0.0f, 0.0f, 1.0f };
-			if (a_grass.FitsToSlope()) {
+			if (a_fitToSlope) {
 				basis2[0] = a_sample.normal[0];
 				basis2[1] = a_sample.normal[1];
 				basis2[2] = a_sample.normal[2];
@@ -447,6 +447,30 @@ namespace FasterNGIO::Grass
 			a_blade.position[0] = a_x;
 			a_blade.position[1] = a_y;
 			a_blade.position[2] = a_sample.height;
+			a_blade.brightness = a_brightness;
+			a_blade.orientation = a_orientation;
+			a_blade.heightRandom = a_heightRandom;
+		}
+
+		void EncodeBladeScale(BladeCandidate& a_blade, const GameData::GrassInfo& a_grass, float a_globalScale)
+		{
+			// As NGIO's hook: the engine's final scale (1 + offset) times the global scale.
+			a_blade.words[13] = FloatToHalfBits((1.0f + a_blade.heightRandom * a_grass.heightRange) * a_globalScale - 1.0f);
+		}
+	}
+
+	void MoveBlade(BladeCandidate& a_blade, const CellCandidates& a_cell, float a_z, const float (&a_normal)[3], float a_globalScale)
+	{
+		const auto& grass = *a_cell.groups[a_blade.groupIndex].grass;
+		Internal::TerrainSample surface;
+		surface.height = a_z;
+		surface.normal[0] = a_normal[0];
+		surface.normal[1] = a_normal[1];
+		surface.normal[2] = a_normal[2];
+		Internal::EncodeBlade(a_blade, a_cell.cellX, a_cell.cellY, a_blade.position[0], a_blade.position[1], surface, grass, a_blade.brightness, a_blade.orientation,
+			a_blade.heightRandom, true);
+		if (a_globalScale != 1.0f) {
+			Internal::EncodeBladeScale(a_blade, grass, a_globalScale);
 		}
 	}
 
@@ -455,7 +479,13 @@ namespace FasterNGIO::Grass
 		if (!a_land.cellX || !a_land.cellY || !a_land.hasHeights) {
 			return {};
 		}
-		return a_settings.mode == PlacementMode::Smooth ? Internal::GenerateSmoothCellCandidates(a_snapshot, a_land, a_settings)
-		                                                : Internal::GenerateVanillaCellCandidates(a_snapshot, a_land, a_settings);
+		auto cell = a_settings.mode == PlacementMode::Smooth ? Internal::GenerateSmoothCellCandidates(a_snapshot, a_land, a_settings)
+		                                                     : Internal::GenerateVanillaCellCandidates(a_snapshot, a_land, a_settings);
+		if (a_settings.globalScale != 1.0f) {
+			for (auto& blade : cell.blades) {
+				Internal::EncodeBladeScale(blade, *cell.groups[blade.groupIndex].grass, a_settings.globalScale);
+			}
+		}
+		return cell;
 	}
 }

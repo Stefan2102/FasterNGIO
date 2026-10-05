@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rejection/NgioRules.h"
 #include "Rejection/RejectionConfig.h"
 #include "Rejection/WorldIndex.h"
 
@@ -46,6 +47,14 @@ namespace FasterNGIO::Rejection
 
 		// True when the world-space capsule [a_p, a_q] swept by a_radius overlaps any collision.
 		[[nodiscard]] bool CapsuleHitsWorld(const Float3& a_p, const Float3& a_q, float a_radius) const;
+
+		// What the world-space capsule touches, by instance role; stops once nothing can change the
+		// blade's fate (an ordinary hit, and a cliff hit when the world has cliffs).
+		[[nodiscard]] VolumeHits ClassifyCapsule(const Float3& a_p, const Float3& a_q, float a_radius) const;
+
+		// Appends every surface segment [a_p, a_q] meets, in no particular order (see
+		// GrassQueryMath.hlsli's SegmentHit).
+		void SegmentHitsWorld(const Float3& a_p, const Float3& a_q, std::vector<WorldSegmentHit>& a_hits) const;
 
 		// One reject bit per blade, as RejectCellOnCpu returns.
 		[[nodiscard]] std::vector<std::uint32_t> RejectCell(const Grass::CellCandidates& a_cell, std::span<const QueryShape> a_shapes) const;

@@ -10,16 +10,16 @@ or CommonLibSSE.
 | Path | Contents |
 |---|---|
 | `src/GameData/` | Plugin (ESM/ESP/ESL) reading, in the order data flows: `LoadOrder` (plugins.txt, TES4 headers, FileIDs), `PluginParser` (one plugin's records into a `StaticPluginShard`), `StaticWorld` (overrides resolved into the `StaticWorldSnapshot`). `FormID.h` and `Records.h` hold the types, `Internal/` the file format (`RecordReader`) and the per-record extractors. Only the fields placement and rejection use are read. |
-| `src/Grass/` | Grass placement: `Placement.h` (settings, candidates, `GenerateCellCandidates`), `VanillaPlacement.cpp` (the engine's algorithm), `SmoothPlacement` (`SmoothWeightField` and smooth placement), `Internal/PlacementCommon.h` (terrain sampling, filters and blade encoding both share). `CellCache` turns placed blades into a cell's `.cgid` (`FinalizeCell`, file names); `NgioCacheWriter` is the format; `GameIni` the game's `[Grass]` INI settings. |
+| `src/Grass/` | Grass placement: `Placement.h` (settings, candidates, `GenerateCellCandidates`), `VanillaPlacement.cpp` (the engine's algorithm), `SmoothPlacement` (`SmoothWeightField` and smooth placement), `Internal/PlacementCommon.h` (terrain sampling, filters and blade encoding both share). `CellCache` turns placed blades into a cell's `.cgid` (`FinalizeCell`, file names); `NgioCacheWriter` is the format; `GameIni` the game's `[Grass]` INI settings; `LandTexture` which land textures the terrain shows where (NGIO's texture forms). |
 | `src/Archives/` | Memory-mapped BSA (v103/104/105) reader and load-order-aware resolver (loose files win). |
 | `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows); `IniFile`; `GameInstall` (validates a game folder, detects the store build, derives plugins.txt and the INI folder); `ModOrganizer` (the MO2 instance and profile this process runs under); `UserSettings` (the launcher's remembered choices); the small shared helpers: `FileSystem` (per-user folders), `Text` (UTF-8 paths, ASCII case folding), `MappedFile`, `WholeFile`. |
-| `src/Collision/` | nifly-based Havok collision extraction (CMS, packed strips, convex hulls, boxes, spheres, capsules) into model space. |
-| `src/Rejection/` | NGIO query shapes (`RejectionConfig`), the per-world instance index (`WorldIndex`), the CPU BVH fallback (`CpuBvh`), the brute-force reference (`CpuReference`), and `Bounds` (AABBs and primitive kinds, shared with the GPU). |
+| `src/Collision/` | nifly-based Havok collision extraction (CMS, packed strips, convex hulls, boxes, spheres, capsules) into model space; on request, the render shapes' names and vertices (`NearestRenderShape`, for NGIO's shape-name filters), or (experimental `renderGeometry`) the visible render triangles in place of a model's collision. |
+| `src/Rejection/` | NGIO query shapes (`RejectionConfig`), the per-world instance index (`WorldIndex`), the CPU BVH fallback (`CpuBvh`), the brute-force reference (`CpuReference`), and `Bounds` (AABBs and primitive kinds, shared with the GPU). `RejectionFeatures` holds NGIO's resolved lists and objects; `NgioRules` the per-blade decision (ignored shapes, grass cliffs) that every backend feeds. |
 | `src/Gpu/` | `GpuRejector`: feature check, the render thread (OpenRenderGraph `PersistentGraphHost`), BLAS/TLAS, ray-tracing pipeline, one DispatchRays per frame, readback. `ModelPacking` lays collision out for the shader (in Core, so it is testable without a GPU); `GpuShaders` loads the shader library. |
 | `src/Pipeline/` | Lock-free cell pipeline on ORGModuleServices' AsyncStateGraph (`CellPipeline`), the writer threads (`FileWriterPool`), the waiters that suspend in the graph (`SuspensionWaiters`), the TBB graph scheduler. |
 | `src/Concurrency/` | Header-only lock-free building blocks: `MpscQueue`, `WaitUntil`. |
-| `apps/FasterNGIO/` | The `FasterNGIOApp` library: `CommandLine` (arguments, MO2 defaults), `Options` (`GenerateOptions` and the names of its choices), `Generate` (the run itself: snapshot, per-world loop, progress and cancellation), `WorldSetup` (preparing a world), `Diagnostics`. The executable adds `Main.cpp` (CLI or launcher) and `Gui/` (the ImGui launcher; Win32 + D3D11 on Windows, GLFW + OpenGL 3 elsewhere). |
-| `shaders/` | `GrassRejection.hlsl` (DXIL for D3D12, SPIR-V for Vulkan), `Shared/GrassQueryMath.hlsli` (the overlap tests) and `Shared/RejectionLayout.hlsli` (the buffer and root-constant layouts), which the C++ also compiles (`src/Rejection/HlslShim.h`). |
+| `apps/FasterNGIO/` | The `FasterNGIOApp` library: `CommandLine` (arguments, MO2 defaults), `Options` (`GenerateOptions` and the names of its choices), `Generate` (the run itself: snapshot, per-world loop, progress and cancellation), `WorldSetup` (preparing a world), `Diagnostics`, `NgioConfig` (NGIO's `GrassControl.ini` and `*_NGIO.ini`). The executable adds `Main.cpp` (CLI or launcher) and `Gui/` (the ImGui launcher; Win32 + D3D11 on Windows, GLFW + OpenGL 3 elsewhere). |
+| `shaders/` | `GrassRejection.hlsl` (DXIL for D3D12, SPIR-V for Vulkan), `Shared/GrassQueryMath.hlsli` (the overlap tests and segment hits) and `Shared/RejectionLayout.hlsli` (the buffer and root-constant layouts), which the C++ also compiles (`src/Rejection/HlslShim.h`). |
 | `tests/` | One file per module; `TestSupport.h` has the temp-folder and file helpers. `GameDataTests` writes tiny plugins and archives; `RejectionTests` builds synthetic worlds. |
 | `tools/` | `build_linux.sh` and `setup_linux.sh` (sharing `linux_common.sh`); `analyze_placement_edges.py`: grid-locking and corner statistics of `--export-blades` output, with a grid-free control. |
 | `external/` | Submodules: BasicRHI, OpenRenderGraph, ORGModuleServices, BasicTelemetry, volk (pinned to BasicRenderer's commits) and upstream nifly. |
@@ -91,13 +91,30 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   whole worldspace, never the selected cells, so a cell is identical whatever a run selects. Judge
   placement changes with `tools/analyze_placement_edges.py` against vanilla and the null control.
 - **Rejection is a post-filter.** NGIO's own hook skips the colour/orientation/height RNG draws for a
-  rejected blade; FasterNGIO deliberately keeps the vanilla layout and only drops blades.
+  rejected blade; FasterNGIO deliberately keeps the vanilla layout and only drops blades, or (grass
+  cliffs) moves them: `Grass::MoveBlade` re-encodes a blade from the draws `BladeCandidate` keeps.
+- **NGIO's settings are one implicit input.** `GrassControl.ini` in `Data/SKSE/Plugins` and the
+  `*_NGIO.ini` files in `Data` are read at the start of every run (`App::LoadNgioSettingsFor`,
+  logged), folded into the options where the command line chose nothing (`ApplyNgioSettings`), and
+  their form lists resolved once the load order is known (`ResolveNgioFeatures`). Missing keys take
+  NGIO's defaults, including its quirks (`Ray-cast-mode` is never applied). Without the file, or with
+  `--ngio-config none`, a run is exactly the plain one: the parity checks pass `none`.
+- **Render geometry is opt-in and collision-gated.** `--render-geometry` (the launcher's experimental
+  checkbox, `RejectionFeatures::renderGeometry`) swaps a model's collision for its solid render
+  triangles only when the model has collision in a kept layer, so the set of rejecting objects is
+  NGIO's; the triangles go through the existing mesh path on every backend. Off, a run is unchanged.
+- **One per-blade decision.** What a blade's volume touched (`Rejection::VolumeHits`, by instance
+  role) and, for cliff candidates, its cliff rays (`CliffRays`) come from the GPU's two passes, the CPU
+  BVH or the brute-force reference; `Rejection::DecideBlade` (`NgioRules.cpp`) alone turns them into
+  rejected, kept or moved. A world without cliff or ignored-shape instances (`UsesRoles`) takes the
+  plain single-bit path everywhere.
 - **One source of geometric truth.** Exact overlap tests live in `shaders/Shared/GrassQueryMath.hlsli`
   and are compiled by the GPU, the CPU BVH and the brute-force reference (`PrimitiveTests.h` wraps
   them per primitive). That includes the hull test, a template over how each side stores hulls
-  (`BufferHull` in the shader, `ModelHull` in C++). Change them there, never in one copy. Likewise the
-  buffer layouts the C++ fills and the shader reads (model records, root constants, debug records) are
-  defined once, in `shaders/Shared/RejectionLayout.hlsli`.
+  (`BufferHull` in the shader, `ModelHull` in C++), and the segment hits the grass cliffs use
+  (`SegmentHit*`). Change them there, never in one copy. Likewise the buffer layouts the C++ fills
+  and the shader reads (model records, root constants, debug records, volume and cliff results, the
+  instance roles) and NGIO's cliff constants are defined once, in `shaders/Shared/RejectionLayout.hlsli`.
 - **Arguments mean the command line, unchanged.** No arguments (or `--gui`) opens the launcher; any
   other arguments, as MO2 passes them, must behave exactly as before. The launcher only builds
   `GenerateOptions` and calls `App::Run`, so anything generation does belongs in `FasterNGIOApp`
@@ -124,7 +141,10 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   cell pipeline, `GpuRejector` or the rejection structures.
 - **DXR payload.** The hit result is written by the closest-hit and miss shaders. Do not reintroduce
   `RAY_FLAG_SKIP_CLOSEST_HIT_SHADER` and rely on the payload surviving a traversal that runs neither:
-  on NVIDIA it does not.
+  on NVIDIA it does not. Nor rely on a shader reading the payload the ray-generation shader
+  initialised: on D3D12 (NVIDIA) the cliff pass's any-hit shader received garbage where Vulkan was
+  correct, so its rays gather their hits in scratch words of the output buffer instead
+  (`kCliffWordScratch`), one lane per slot.
 
 ## Validation
 

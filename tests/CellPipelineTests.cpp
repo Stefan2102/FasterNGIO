@@ -1,5 +1,7 @@
 #include "Pipeline/CellPipeline.h"
 #include "Pipeline/FileWriterPool.h"
+#include "Grass/LandTexture.h"
+#include "Rejection/CpuBvh.h"
 
 #include "TestSupport.h"
 
@@ -93,4 +95,60 @@ TEST(CellPipeline, CancelsCellsOnceStopped)
 	EXPECT_EQ(stats.cellsCancelled, 3u);
 	EXPECT_EQ(stats.cellsWritten, 0u);
 	EXPECT_TRUE(std::filesystem::is_empty(world.output.Path()));
+}
+
+TEST(CellPipeline, AppliesNgiosGrassFilters)
+{
+	using GameData::FormID;
+	constexpr FormID kGrass{ 0x100 };
+	constexpr FormID kTexture{ 0x200 };
+	constexpr FormID kWorld{ 0x3C };
+	Tests::TempDirectory output;
+	GameData::StaticWorldSnapshot snapshot;
+	auto& grass = snapshot.grassesByFormID[kGrass];
+	grass.formID = kGrass;
+	grass.modelPath = "grass.nif";
+	grass.density = 50;
+	grass.positionRange = 20.0f;
+	auto& texture = snapshot.landTexturesByFormID[kTexture];
+	texture.formID = kTexture;
+	texture.grassFormIDs = { kGrass };
+	auto& land = snapshot.landsByWorldspace[kWorld].emplace_back();
+	land.cellX = 0;
+	land.cellY = 0;
+	land.hasHeights = true;
+	for (std::uint8_t q = 0; q < GameData::LandInfo::QuadrantCount; ++q) {
+		land.baseTextures[q] = GameData::LandBaseTexture{ .landTextureFormID = kTexture, .quadrant = q };
+	}
+	std::unordered_map<FormID, Rejection::QueryShape, GameData::FormIDHash> shapes{ { kGrass, Rejection::QueryShape{ .depth = 5.0f, .height = 150.0f, .radius = 10.0f } } };
+	// Nothing to collide with: only the filters reject.
+	const Rejection::WorldIndex world({}, {}, 0.0f);
+	const Rejection::CpuBvh bvh(world);
+	const Grass::LandTextureMask mask(snapshot, kWorld, { kTexture });
+	const Rejection::FormSet ignored{ kGrass };
+
+	const auto run = [&](const Grass::LandTextureMask* a_mask, const Rejection::FormSet* a_ignored) {
+		Pipeline::CellPipelineDesc desc;
+		desc.snapshot = &snapshot;
+		desc.lands = { &land };
+		desc.worldEditorID = "Test";
+		desc.outputDirectory = output.Path();
+		desc.overwrite = true;
+		desc.shapesByGrass = &shapes;
+		desc.backend = Pipeline::RejectionBackend::Cpu;
+		desc.world = &world;
+		desc.cpuBvh = &bvh;
+		desc.textureMask = a_mask;
+		desc.textureWidth = 5.0f;
+		desc.ignoredGrass = a_ignored;
+		return Pipeline::RunCellPipeline(desc);
+	};
+	const auto plain = run(nullptr, nullptr);
+	ASSERT_GT(plain.blades, 0u);
+	EXPECT_EQ(plain.bladesRejected, 0u);
+	// Every blade stands on the listed texture.
+	const auto textured = run(&mask, nullptr);
+	EXPECT_EQ(textured.bladesRejected, textured.blades);
+	// Ignored grass is never rejected, texture or not.
+	EXPECT_EQ(run(&mask, &ignored).bladesRejected, 0u);
 }

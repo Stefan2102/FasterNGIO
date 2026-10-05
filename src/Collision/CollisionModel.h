@@ -71,12 +71,22 @@ namespace FasterNGIO::Collision
 		Count
 	};
 
+	// A render shape (BSTriShape, NiTriShape) and its vertices in model space, for NGIO's
+	// shape-name filters.
+	struct RenderShape
+	{
+		std::string name;
+		std::vector<Float3> vertices;
+	};
+
 	struct ExtractionStats
 	{
 		std::uint32_t collisionObjects{ 0 };
 		std::uint32_t bodiesKept{ 0 };
 		std::uint32_t bodiesFilteredByLayer{ 0 };
 		std::uint32_t nonRigidBodies{ 0 };
+		// The collision was replaced by the render shapes' triangles (ExtractionOptions::renderGeometry).
+		bool renderGeometry{ false };
 		std::array<std::uint32_t, static_cast<std::size_t>(ShapeType::Count)> shapes{};
 		std::vector<std::string> unsupportedShapes;
 		std::vector<std::string> trace;
@@ -109,6 +119,9 @@ namespace FasterNGIO::Collision
 		// Bounds of the render shapes, when requested; empty (min > max) when there are none.
 		Float3 renderAabbMin{ 1.0f, 1.0f, 1.0f };
 		Float3 renderAabbMax{ -1.0f, -1.0f, -1.0f };
+		// The root node's name and the render shapes, when requested.
+		std::string rootName;
+		std::vector<RenderShape> renderShapes;
 		ExtractionStats stats;
 
 		[[nodiscard]] bool Empty() const { return triangles.empty() && hulls.empty() && capsules.empty(); }

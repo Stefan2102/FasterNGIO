@@ -5,6 +5,7 @@
 #include "Gui/LauncherSettings.h"
 #include "Gui/LogSink.h"
 #include "Gui/Window.h"
+#include "NgioConfig.h"
 #include "Platform/FileSystem.h"
 #include "Platform/GameInstall.h"
 #include "Platform/ModOrganizer.h"
@@ -219,6 +220,23 @@ namespace FasterNGIO::Gui
 				}
 				_pluginsFound = PluginsTxtFound();
 				_enabledPlugins = _pluginsFound ? CountEnabledPlugins(PluginsTxt()) : 0;
+				DescribeNgioSettings();
+			}
+
+			// What NGIO's own settings (GrassControl.ini in the game's Data folder, which Mod Organizer 2
+			// shows through its VFS) will change, for the Options section.
+			void DescribeNgioSettings()
+			{
+				const auto settings = App::LoadNgioSettings(App::DefaultNgioConfigPath(_install->data), _install->data);
+				if (!settings.Present()) {
+					_ngioSummary = "NGIO settings: none found (no SKSE/Plugins/GrassControl.ini in Data), so NGIO's defaults are not applied.";
+					return;
+				}
+				const auto lists = settings.ignoreForms.size() + settings.ignoreGrassForms.size() + settings.textureForms.size();
+				_ngioSummary = std::format("NGIO settings from {}: ray cast {}, grass cliffs {}{}{}{}.", Utf8(settings.files.front()), settings.rayCast ? "on" : "off",
+					settings.grassCliffs ? "on" : "off", lists ? std::format(", {} ignore/texture form(s)", lists) : std::string{},
+					settings.files.size() > 1 ? std::format(", {} object file(s)", settings.files.size() - 1) : std::string{},
+					settings.globalGrassScale != 1.0f ? std::format(", global scale {}", settings.globalGrassScale) : std::string{});
 			}
 
 			// Reads the plugins in the background for the worldspace list once the inputs have
@@ -354,7 +372,9 @@ namespace FasterNGIO::Gui
 				}
 				options.placement.mode = _inputs.placement;
 				options.rejection = _inputs.rejection;
+				options.rejectionChosen = true;
 				options.overwrite = _inputs.overwrite;
+				options.renderGeometry = _inputs.renderGeometry;
 				options.gameIniDirectory = IniFolder();
 
 				std::shared_ptr<const App::LoadedPlugins> preloaded;
@@ -600,8 +620,19 @@ namespace FasterNGIO::Gui
 					}
 					ImGui::EndCombo();
 				}
+				ImGui::BeginDisabled(_inputs.rejection == App::RejectChoice::None);
+				ImGui::Checkbox("Use model geometry instead of collision (experimental)", &_inputs.renderGeometry);
+				ImGui::EndDisabled();
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+					ImGui::SetTooltip(
+						"Objects that have collision remove grass where their visible mesh is, instead of where\n"
+						"their (usually coarser) collision is. Objects without collision still keep grass.");
+				}
 
 				ImGui::Checkbox("Rebuild cache files that already exist", &_inputs.overwrite);
+				if (_install && !_ngioSummary.empty()) {
+					ImGui::TextDisabled("%s", _ngioSummary.c_str());
+				}
 
 				ImGui::SetNextItemOpen(_showAdvanced, ImGuiCond_Once);
 				if (ImGui::TreeNode("Advanced")) {
@@ -750,6 +781,7 @@ namespace FasterNGIO::Gui
 			bool _pluginsFound{ false };
 			Clock::time_point _lastPluginsCheck{};
 			std::size_t _enabledPlugins{ 0 };
+			std::string _ngioSummary;
 
 			std::unique_ptr<BackgroundTask<Scan>> _scan;
 			ScanKey _scanKey;

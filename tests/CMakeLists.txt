@@ -5,6 +5,7 @@ include(GoogleTest)
 add_executable(FasterNGIOTests
 	CellCacheTests.cpp
 	CellPipelineTests.cpp
+	CollisionTests.cpp
 	CommandLineTests.cpp
 	FileWriterPoolTests.cpp
 	GameDataTests.cpp
@@ -15,6 +16,8 @@ add_executable(FasterNGIOTests
 	ModOrganizerTests.cpp
 	MpscQueueTests.cpp
 	NgioCacheWriterTests.cpp
+	NgioConfigTests.cpp
+	NgioRulesTests.cpp
 	PlacementTests.cpp
 	RejectionTests.cpp
 	TestSupport.h
