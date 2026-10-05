@@ -2,31 +2,59 @@ add_library(FasterNGIOCore STATIC
 	Archives/ArchiveResolver.cpp
 	Archives/ArchiveResolver.h
 	Collision/CollisionModel.h
+	Concurrency/AtomicWait.h
+	Concurrency/MpscQueue.h
 	Collision/NifCollisionExtractor.cpp
 	Collision/NifCollisionExtractor.h
 	Collision/ObjExport.cpp
 	Collision/ObjExport.h
-	GameData/GameData.cpp
+	GameData/FormID.h
 	GameData/GameData.h
-	GameData/ModelPathNormalization.cpp
-	GameData/PluginFileReader.cpp
-	GameData/Internal/PluginFileReader.h
+	GameData/Internal/RecordExtractors.h
+	GameData/Internal/RecordReader.h
+	GameData/LoadOrder.cpp
+	GameData/LoadOrder.h
+	GameData/ModelPath.cpp
+	GameData/ModelPath.h
+	GameData/PluginParser.cpp
+	GameData/RecordExtractors.cpp
+	GameData/RecordReader.cpp
+	GameData/Records.h
+	GameData/StaticWorld.cpp
+	GameData/StaticWorld.h
+	Gpu/ModelPacking.cpp
+	Gpu/ModelPacking.h
+	Grass/CellCache.cpp
+	Grass/CellCache.h
 	Grass/GameIni.cpp
 	Grass/GameIni.h
 	Grass/NgioCacheWriter.cpp
 	Grass/NgioCacheWriter.h
+	Grass/Internal/PlacementCommon.h
 	Grass/Placement.cpp
 	Grass/Placement.h
+	Grass/SmoothPlacement.cpp
+	Grass/SmoothPlacement.h
+	Grass/VanillaPlacement.cpp
 	Platform/DataDirectory.cpp
 	Platform/DataDirectory.h
+	Platform/FileSystem.cpp
+	Platform/FileSystem.h
 	Platform/GameInstall.cpp
 	Platform/GameInstall.h
 	Platform/IniFile.cpp
 	Platform/IniFile.h
+	Platform/MappedFile.cpp
+	Platform/MappedFile.h
+	Platform/ModOrganizer.cpp
+	Platform/ModOrganizer.h
+	Platform/Text.cpp
+	Platform/Text.h
 	Platform/UserSettings.cpp
 	Platform/UserSettings.h
 	Platform/WholeFile.cpp
 	Platform/WholeFile.h
+	Rejection/Bounds.h
 	Rejection/CpuBvh.cpp
 	Rejection/CpuBvh.h
 	Rejection/CpuReference.cpp
@@ -38,6 +66,7 @@ add_library(FasterNGIOCore STATIC
 	Rejection/WorldIndex.cpp
 	Rejection/WorldIndex.h
 	../shaders/Shared/GrassQueryMath.hlsli
+	../shaders/Shared/RejectionLayout.hlsli
 )
 fasterngio_configure_target(FasterNGIOCore)
 target_include_directories(FasterNGIOCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -49,15 +78,17 @@ target_link_libraries(FasterNGIOCore
 	PRIVATE
 		ZLIB::ZLIB
 		lz4::lz4
-		$<$<PLATFORM_ID:Windows>:Shell32 Ole32>
+		$<$<PLATFORM_ID:Windows>:Shell32 Ole32 Advapi32>
 )
 
 if(FASTERNGIO_ENABLE_GPU)
 	add_library(FasterNGIOGpu STATIC
 		Gpu/GpuRejector.cpp
+		Gpu/GpuApi.h
 		Gpu/GpuRejector.h
+		Gpu/GpuShaders.cpp
+		Gpu/GpuShaders.h
 		../shaders/GrassRejection.hlsl
-		Pipeline/MpscQueue.h
 	)
 	set_source_files_properties(../shaders/GrassRejection.hlsl PROPERTIES HEADER_FILE_ONLY TRUE)
 	fasterngio_configure_target(FasterNGIOGpu)
@@ -78,9 +109,10 @@ endif()
 add_library(FasterNGIOPipeline STATIC
 	Pipeline/CellPipeline.cpp
 	Pipeline/CellPipeline.h
-	Pipeline/CacheWriter.cpp
-	Pipeline/CacheWriter.h
-	Pipeline/MpscQueue.h
+	Pipeline/FileWriterPool.cpp
+	Pipeline/FileWriterPool.h
+	Pipeline/SuspensionWaiters.cpp
+	Pipeline/SuspensionWaiters.h
 	Pipeline/TbbGraphScheduler.cpp
 	Pipeline/TbbGraphScheduler.h
 )

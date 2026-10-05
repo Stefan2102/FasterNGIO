@@ -1,8 +1,8 @@
-#include "Pipeline/CacheWriter.h"
+#include "Pipeline/FileWriterPool.h"
 
+#include "Concurrency/AtomicWait.h"
 #include "Platform/WholeFile.h"
 
-#include <ORGModuleServices/Async/SuspensionIdentity.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -11,7 +11,7 @@
 
 namespace FasterNGIO::Pipeline
 {
-	CacheWriter::CacheWriter(std::uint32_t a_threads, std::uint64_t a_maxPendingBytes) :
+	FileWriterPool::FileWriterPool(std::uint32_t a_threads, std::uint64_t a_maxPendingBytes) :
 		_maxPendingBytes(a_maxPendingBytes)
 	{
 		const auto threads = (std::max)(a_threads, 1u);
@@ -23,7 +23,7 @@ namespace FasterNGIO::Pipeline
 		}
 	}
 
-	CacheWriter::~CacheWriter()
+	FileWriterPool::~FileWriterPool()
 	{
 		Drain();
 		_stopping.store(true, std::memory_order_release);
@@ -36,7 +36,7 @@ namespace FasterNGIO::Pipeline
 		}
 	}
 
-	void CacheWriter::Submit(std::filesystem::path a_path, std::vector<std::uint8_t> a_bytes, std::shared_ptr<WriteTally> a_tally)
+	void FileWriterPool::Submit(std::filesystem::path a_path, std::vector<std::uint8_t> a_bytes, std::shared_ptr<WriteTally> a_tally)
 	{
 		_pendingBytes.fetch_add(a_bytes.size(), std::memory_order_acq_rel);
 		_pendingFiles.fetch_add(1, std::memory_order_acq_rel);
@@ -47,31 +47,20 @@ namespace FasterNGIO::Pipeline
 		slot.signal.notify_one();
 	}
 
-	std::uint64_t CacheWriter::AdmitOrWait(const std::function<void(std::uint64_t)>& a_notify)
+	std::uint64_t FileWriterPool::AdmitOrWait(SuspensionWaiters::Notify a_notify)
 	{
-		if (_pendingBytes.load(std::memory_order_acquire) < _maxPendingBytes) {
+		if (UnderBudget()) {
 			return 0;
 		}
-		auto waiter = std::make_shared<Waiter>();
-		waiter->identity = org::async::AllocateArtifactSuspensionIdentity();
-		waiter->notify = a_notify;
-		_waiters.push(waiter);
-		// The backlog may have drained before the waiter was visible.
-		if (_pendingBytes.load(std::memory_order_acquire) < _maxPendingBytes) {
-			waiter->active.store(false, std::memory_order_release);
-			return 0;
-		}
-		return waiter->identity;
+		return _waiters.Wait(std::move(a_notify), [this] { return UnderBudget(); });
 	}
 
-	void CacheWriter::Drain()
+	void FileWriterPool::Drain()
 	{
-		for (auto pending = _pendingFiles.load(std::memory_order_acquire); pending != 0; pending = _pendingFiles.load(std::memory_order_acquire)) {
-			_pendingFiles.wait(pending, std::memory_order_acquire);
-		}
+		Concurrency::WaitUntil(_pendingFiles, [](std::uint64_t a_pending) { return a_pending == 0; });
 	}
 
-	void CacheWriter::Loop(Slot& a_slot)
+	void FileWriterPool::Loop(Slot& a_slot)
 	{
 		while (true) {
 			const auto seen = a_slot.signal.load(std::memory_order_acquire);
@@ -87,7 +76,7 @@ namespace FasterNGIO::Pipeline
 		}
 	}
 
-	void CacheWriter::Write(Job& a_job)
+	void FileWriterPool::Write(Job& a_job)
 	{
 		const auto begin = std::chrono::steady_clock::now();
 		try {
@@ -103,26 +92,12 @@ namespace FasterNGIO::Pipeline
 		_pendingBytes.fetch_sub(a_job.bytes.size(), std::memory_order_acq_rel);
 		a_job = Job{};
 		const auto left = _pendingFiles.fetch_sub(1, std::memory_order_acq_rel) - 1;
-		// Once empty, every waiter goes: nothing else would wake them.
-		Wake(left == 0);
 		if (left == 0) {
+			// Nothing else would wake the remaining waiters.
+			_waiters.WakeAll();
 			_pendingFiles.notify_all();
-		}
-	}
-
-	void CacheWriter::Wake(bool a_all)
-	{
-		if (!a_all && _pendingBytes.load(std::memory_order_acquire) >= _maxPendingBytes) {
-			return;
-		}
-		std::shared_ptr<Waiter> waiter;
-		while (_waiters.try_pop(waiter)) {
-			if (waiter->active.exchange(false, std::memory_order_acq_rel)) {
-				waiter->notify(waiter->identity);
-				if (!a_all) {
-					return;
-				}
-			}
+		} else if (UnderBudget()) {
+			_waiters.WakeOne();
 		}
 	}
 }

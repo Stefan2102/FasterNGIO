@@ -1,4 +1,5 @@
 #include "Grass/Placement.h"
+#include "Grass/SmoothPlacement.h"
 
 #include <gtest/gtest.h>
 

@@ -1,12 +1,16 @@
 #pragma once
 
-#include "Grass/Placement.h"
 #include "Rejection/RejectionConfig.h"
 #include "Rejection/WorldIndex.h"
 
 #include <cstdint>
 #include <span>
 #include <vector>
+
+namespace FasterNGIO::Grass
+{
+	struct CellCandidates;
+}
 
 namespace FasterNGIO::Rejection
 {

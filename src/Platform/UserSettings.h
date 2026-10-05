@@ -27,9 +27,6 @@ namespace FasterNGIO::Platform
 		[[nodiscard]] std::optional<std::string> Get(std::string_view a_key) const;
 		void Set(std::string_view a_key, std::string_view a_value);
 
-		[[nodiscard]] std::optional<std::filesystem::path> GetPath(std::string_view a_key) const;
-		void SetPath(std::string_view a_key, const std::filesystem::path& a_value);
-
 	private:
 		std::map<std::string, std::string, std::less<>> _values;
 	};

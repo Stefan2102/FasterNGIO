@@ -1,5 +1,7 @@
 #include "Pipeline/TbbGraphScheduler.h"
 
+#include "Concurrency/AtomicWait.h"
+
 #include <oneapi/tbb/task_group.h>
 
 #include <atomic>
@@ -26,9 +28,7 @@ namespace FasterNGIO::Pipeline
 			void Wait() const override
 			{
 				// Delayed tasks land in the group later; wait until none are pending first.
-				for (auto pending = delayed.load(std::memory_order_acquire); pending != 0; pending = delayed.load(std::memory_order_acquire)) {
-					delayed.wait(pending, std::memory_order_acquire);
-				}
+				Concurrency::WaitUntil(delayed, [](std::uint64_t a_pending) { return a_pending == 0; });
 				group->wait();
 			}
 

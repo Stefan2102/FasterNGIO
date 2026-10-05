@@ -1,5 +1,6 @@
 #include "Rejection/CpuReference.h"
 
+#include "Grass/Placement.h"
 #include "Rejection/HlslShim.h"
 #include "Rejection/PrimitiveTests.h"
 
@@ -104,14 +105,7 @@ namespace FasterNGIO::Rejection
 		for (std::size_t i = 0; i < a_cell.blades.size(); ++i) {
 			const auto& blade = a_cell.blades[i];
 			const auto& shape = a_shapes[blade.groupIndex];
-			if (!shape.test) {
-				continue;
-			}
-			if (shape.halfExtentX > 0.0f || shape.halfExtentY > 0.0f) {
-				throw std::runtime_error("box queries (Ray-cast-mode 2) are not implemented");
-			}
-			const Float3 p{ blade.position[0], blade.position[1], blade.position[2] - shape.depth };
-			const Float3 q{ blade.position[0], blade.position[1], blade.position[2] + shape.height };
+			const auto [p, q] = BladeSegment(shape, blade.position);
 			const Float3 lo{ p.x - shape.radius, p.y - shape.radius, p.z - shape.radius };
 			const Float3 hi{ q.x + shape.radius, q.y + shape.radius, q.z + shape.radius };
 			for (const auto instanceIndex : instances) {

@@ -1,7 +1,8 @@
 #pragma once
 
-// The minimal HLSL vocabulary GrassQueryMath.hlsli uses, so the C++ reference compiles the
-// exact same source as the GPU.
+// The minimal HLSL vocabulary the shared shader headers use, so the C++ compiles the exact same
+// source as the GPU: the overlap tests (GrassQueryMath.hlsli) and the buffer layouts
+// (RejectionLayout.hlsli).
 
 #include <algorithm>
 #include <cmath>
@@ -49,8 +50,11 @@ namespace FasterNGIO::Rejection::Hlsl
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wunused-const-variable"
+#pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
 #include "../../shaders/Shared/GrassQueryMath.hlsli"
+#include "../../shaders/Shared/RejectionLayout.hlsli"
 #if defined(__clang__) || defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Grass/Placement.h"
+#include "Platform/GameInstall.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -10,6 +10,8 @@
 
 namespace FasterNGIO::Grass
 {
+	struct PlacementSettings;
+
 	// The folder the game reads Skyrim.ini, SkyrimCustom.ini and SkyrimPrefs.ini from.
 	struct GameIniDirectory
 	{
@@ -19,12 +21,15 @@ namespace FasterNGIO::Grass
 	};
 
 	// In order: a_explicit; the MO2 profile holding a_pluginsTxt when that profile uses its own game
-	// INIs (settings.ini [General] LocalSettings=true); the game's My Games folder (Documents on
-	// Windows, which MO2's virtual filesystem also redirects to profile INIs; the Proton prefix
-	// elsewhere). Null when none exists.
+	// INIs (settings.ini [General] LocalSettings=true); the My Games folder of the install a_data
+	// belongs to, named for its store (Documents on Windows, which MO2's virtual filesystem also
+	// redirects to profile INIs; the Proton prefix elsewhere; a_userFolders overrides both). Null
+	// when none exists.
 	[[nodiscard]] std::optional<GameIniDirectory> LocateGameIniDirectory(
 		const std::filesystem::path& a_pluginsTxt,
-		const std::optional<std::filesystem::path>& a_explicit);
+		const std::filesystem::path& a_data,
+		const std::optional<std::filesystem::path>& a_explicit,
+		const std::optional<Platform::UserFolders>& a_userFolders = std::nullopt);
 
 	template <class T>
 	struct GameIniValue

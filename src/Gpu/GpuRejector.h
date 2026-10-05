@@ -1,7 +1,7 @@
 #pragma once
 
+#include "Gpu/GpuApi.h"
 #include "Rejection/RejectionConfig.h"
-#include "Rejection/WorldIndex.h"
 
 #include <atomic>
 #include <cstdint>
@@ -13,6 +13,16 @@
 #include <string>
 #include <vector>
 
+namespace FasterNGIO::Grass
+{
+	struct BladeCandidate;
+}
+
+namespace FasterNGIO::Rejection
+{
+	class WorldIndex;
+}
+
 namespace FasterNGIO::Gpu
 {
 	// One blade's query: the bottom of its test segment (x, y, z - depth) and its capsule radius.
@@ -23,6 +33,10 @@ namespace FasterNGIO::Gpu
 		float bottomZ{ 0.0f };
 		float radius{ 0.0f };
 	};
+
+	// One query per blade, in blade order, so a hit's index is its blade's. Ray mode (radius 0) still
+	// gets a tiny radius: the intersection shaders test capsules.
+	[[nodiscard]] std::vector<Query> MakeQueries(std::span<const Grass::BladeCandidate> a_blades, std::span<const Rejection::QueryShape> a_shapes);
 
 	// A batch of queries (one cell's) handed to the render thread. Its result is published once,
 	// lock-free: Complete() flips with release semantics after Hits() is written, and every
@@ -67,27 +81,6 @@ namespace FasterNGIO::Gpu
 		std::atomic<Subscriber*> _subscribers{ nullptr };
 	};
 
-	enum class GpuApi
-	{
-		D3D12,
-		Vulkan
-	};
-
-	// D3D12 on Windows; Vulkan everywhere else (native Linux, no Proton).
-	[[nodiscard]] constexpr GpuApi DefaultGpuApi()
-	{
-#if defined(_WIN32)
-		return GpuApi::D3D12;
-#else
-		return GpuApi::Vulkan;
-#endif
-	}
-
-	[[nodiscard]] constexpr const char* GpuApiName(GpuApi a_api)
-	{
-		return a_api == GpuApi::D3D12 ? "D3D12" : "Vulkan";
-	}
-
 	// The adapter (or this build) cannot run the ray-tracing path. what() lists every missing
 	// requirement; callers fall back to the CPU BVH.
 	class GpuUnsupportedError : public std::runtime_error
@@ -109,7 +102,6 @@ namespace FasterNGIO::Gpu
 		float segmentLength{ 155.0f };
 		// Widest query radius any grass type uses; collision AABBs are grown by it.
 		float maxQueryRadius{ 0.0f };
-		std::uint32_t maxQueriesPerFrame{ 1u << 22 };
 		bool debugLayer{ false };
 	};
 

@@ -1,15 +1,23 @@
 #pragma once
 
-#include "Archives/ArchiveResolver.h"
 #include "Collision/CollisionModel.h"
-#include "GameData/GameData.h"
-#include "Rejection/RejectionConfig.h"
+#include "GameData/FormID.h"
 
 #include <cstdint>
 #include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+namespace FasterNGIO::Archives
+{
+	class ArchiveResolver;
+}
+
+namespace FasterNGIO::GameData
+{
+	struct StaticWorldSnapshot;
+}
 
 namespace FasterNGIO::Rejection
 {
@@ -58,11 +66,19 @@ namespace FasterNGIO::Rejection
 	{
 		std::uint64_t references{ 0 };
 		std::uint64_t referencesWithCollision{ 0 };
-		std::uint64_t referencesIgnored{ 0 };
 		std::uint64_t models{ 0 };
 		std::uint64_t modelsWithCollision{ 0 };
 		std::uint64_t modelsMissing{ 0 };
 		double extractSeconds{ 0.0 };
+	};
+
+	// A model placed in the world, for building an index from models already extracted.
+	struct PlacedModel
+	{
+		std::uint32_t model{ 0 };
+		Similarity worldFromModel;
+		GameData::FormID referenceFormID{};
+		GameData::FormID baseFormID{};
 	};
 
 	// Every rejecting instance of one worldspace, binned by the exterior cells its bounds (grown
@@ -70,12 +86,15 @@ namespace FasterNGIO::Rejection
 	class WorldIndex
 	{
 	public:
+		// The worldspace's placed references, with each model's collision extracted from the archives.
 		WorldIndex(
 			const GameData::StaticWorldSnapshot& a_snapshot,
 			GameData::FormID a_worldFormID,
 			const Archives::ArchiveResolver& a_resolver,
-			const RejectionConfig& a_config,
 			float a_maxQueryReach);
+
+		// Models whose collision is already known, placed as given (tests build worlds this way).
+		WorldIndex(std::vector<ModelRecord> a_models, std::span<const PlacedModel> a_placements, float a_maxQueryReach);
 
 		[[nodiscard]] std::span<const std::uint32_t> InstancesInCell(std::int32_t a_cellX, std::int32_t a_cellY) const;
 		[[nodiscard]] const std::vector<ModelRecord>& Models() const { return _models; }
@@ -83,14 +102,12 @@ namespace FasterNGIO::Rejection
 		[[nodiscard]] const WorldIndexStats& Stats() const { return _stats; }
 
 	private:
+		// Instances a placed model when it has rejecting collision, and bins it.
+		void AddInstance(std::uint32_t a_model, GameData::FormID a_reference, GameData::FormID a_base, const Similarity& a_worldFromModel, float a_maxQueryReach);
+
 		std::vector<ModelRecord> _models;
 		std::vector<Instance> _instances;
 		std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> _cells;
 		WorldIndexStats _stats;
 	};
-
-	[[nodiscard]] inline std::uint64_t CellKey(std::int32_t a_x, std::int32_t a_y)
-	{
-		return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a_x)) << 32) | static_cast<std::uint32_t>(a_y);
-	}
 }

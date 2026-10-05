@@ -1,7 +1,5 @@
 #include "Grass/NgioCacheWriter.h"
 
-#include "Platform/WholeFile.h"
-
 namespace FasterNGIO::Grass
 {
 	namespace
@@ -37,7 +35,8 @@ namespace FasterNGIO::Grass
 			output.insert(output.end(), group.modelPath.begin(), group.modelPath.end());
 			output.push_back(0);
 
-			AppendU32(output, group.grassModelData);
+			// The group's model-data word, which FasterNGIO does not fill: always 0.
+			AppendU32(output, 0);
 			AppendU32(output, group.grassFormID);
 			output.push_back(group.vertexLighting ? 1 : 0);
 			output.push_back(group.uniformScaling ? 1 : 0);
@@ -55,11 +54,5 @@ namespace FasterNGIO::Grass
 			}
 		}
 		return output;
-	}
-
-	void WriteNgioCellCache(const std::filesystem::path& a_path, const NgioCellCache& a_cache)
-	{
-		std::filesystem::create_directories(a_path.parent_path());
-		Platform::WriteWholeFile(a_path, SerializeNgioCellCache(a_cache));
 	}
 }

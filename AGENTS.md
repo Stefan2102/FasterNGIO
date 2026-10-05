@@ -9,17 +9,19 @@ or CommonLibSSE.
 
 | Path | Contents |
 |---|---|
-| `src/GameData/` | Plugin (ESM/ESP/ESL) parsing, load order, static world snapshot. Copied from SARP; adds OBND and FLOR/SCOL/TACT. |
-| `src/Grass/` | Grass placement split into `GenerateCellCandidates` and `FinalizeCell`: vanilla (engine RNG emulation) and smooth (`SmoothWeightField`); the game's `[Grass]` INI settings (`GameIni`); the `.cgid` writer. |
+| `src/GameData/` | Plugin (ESM/ESP/ESL) reading, in the order data flows: `LoadOrder` (plugins.txt, TES4 headers, FileIDs), `PluginParser` (one plugin's records into a `StaticPluginShard`), `StaticWorld` (overrides resolved into the `StaticWorldSnapshot`). `FormID.h` and `Records.h` hold the types, `Internal/` the file format (`RecordReader`) and the per-record extractors. Only the fields placement and rejection use are read. |
+| `src/Grass/` | Grass placement: `Placement.h` (settings, candidates, `GenerateCellCandidates`), `VanillaPlacement.cpp` (the engine's algorithm), `SmoothPlacement` (`SmoothWeightField` and smooth placement), `Internal/PlacementCommon.h` (terrain sampling, filters and blade encoding both share). `CellCache` turns placed blades into a cell's `.cgid` (`FinalizeCell`, file names); `NgioCacheWriter` is the format; `GameIni` the game's `[Grass]` INI settings. |
 | `src/Archives/` | Memory-mapped BSA (v103/104/105) reader and load-order-aware resolver (loose files win). |
-| `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows); `IniFile`; `GameInstall` (validates a game folder, detects the store build, derives plugins.txt and the INI folder); `UserSettings` (the launcher's remembered choices). |
+| `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows); `IniFile`; `GameInstall` (validates a game folder, detects the store build, derives plugins.txt and the INI folder); `ModOrganizer` (the MO2 instance and profile this process runs under); `UserSettings` (the launcher's remembered choices); the small shared helpers: `FileSystem` (per-user folders), `Text` (UTF-8 paths, ASCII case folding), `MappedFile`, `WholeFile`. |
 | `src/Collision/` | nifly-based Havok collision extraction (CMS, packed strips, convex hulls, boxes, spheres, capsules) into model space. |
-| `src/Rejection/` | NGIO query shapes, the per-world instance index, the CPU BVH fallback (`CpuBvh`) and the brute-force reference. |
-| `src/Gpu/` | `GpuRejector`: feature check, the render thread (OpenRenderGraph `PersistentGraphHost`), BLAS/TLAS, ray-tracing pipeline, one DispatchRays per frame, readback. |
-| `src/Pipeline/` | Lock-free cell pipeline on ORGModuleServices' AsyncStateGraph; TBB graph scheduler; MPSC queue. |
-| `apps/FasterNGIO/` | `Main.cpp` (argument parsing, CLI or launcher), `Generate` (the run itself, shared by both: snapshot, per-world loop, progress and cancellation), `Gui/` (the ImGui launcher; Win32 + D3D11 on Windows, GLFW + OpenGL 3 elsewhere). |
-| `shaders/` | `GrassRejection.hlsl` (DXIL for D3D12, SPIR-V for Vulkan) and `Shared/GrassQueryMath.hlsli`, which the CPU paths also compile (`src/Rejection/HlslShim.h`). |
-| `tools/` | `analyze_placement_edges.py`: grid-locking and corner statistics of `--export-blades` output, with a grid-free control. |
+| `src/Rejection/` | NGIO query shapes (`RejectionConfig`), the per-world instance index (`WorldIndex`), the CPU BVH fallback (`CpuBvh`), the brute-force reference (`CpuReference`), and `Bounds` (AABBs and primitive kinds, shared with the GPU). |
+| `src/Gpu/` | `GpuRejector`: feature check, the render thread (OpenRenderGraph `PersistentGraphHost`), BLAS/TLAS, ray-tracing pipeline, one DispatchRays per frame, readback. `ModelPacking` lays collision out for the shader (in Core, so it is testable without a GPU); `GpuShaders` loads the shader library. |
+| `src/Pipeline/` | Lock-free cell pipeline on ORGModuleServices' AsyncStateGraph (`CellPipeline`), the writer threads (`FileWriterPool`), the waiters that suspend in the graph (`SuspensionWaiters`), the TBB graph scheduler. |
+| `src/Concurrency/` | Header-only lock-free building blocks: `MpscQueue`, `WaitUntil`. |
+| `apps/FasterNGIO/` | The `FasterNGIOApp` library: `CommandLine` (arguments, MO2 defaults), `Options` (`GenerateOptions` and the names of its choices), `Generate` (the run itself: snapshot, per-world loop, progress and cancellation), `WorldSetup` (preparing a world), `Diagnostics`. The executable adds `Main.cpp` (CLI or launcher) and `Gui/` (the ImGui launcher; Win32 + D3D11 on Windows, GLFW + OpenGL 3 elsewhere). |
+| `shaders/` | `GrassRejection.hlsl` (DXIL for D3D12, SPIR-V for Vulkan), `Shared/GrassQueryMath.hlsli` (the overlap tests) and `Shared/RejectionLayout.hlsli` (the buffer and root-constant layouts), which the C++ also compiles (`src/Rejection/HlslShim.h`). |
+| `tests/` | One file per module; `TestSupport.h` has the temp-folder and file helpers. `GameDataTests` writes tiny plugins and archives; `RejectionTests` builds synthetic worlds. |
+| `tools/` | `build_linux.sh` and `setup_linux.sh` (sharing `linux_common.sh`); `analyze_placement_edges.py`: grid-locking and corner statistics of `--export-blades` output, with a grid-free control. |
 | `external/` | Submodules: BasicRHI, OpenRenderGraph, ORGModuleServices, BasicTelemetry, volk (pinned to BasicRenderer's commits) and upstream nifly. |
 
 ## Build and test
@@ -35,7 +37,7 @@ cmake --preset linux -DVulkan_INCLUDE_DIR=<Vulkan-Headers>/include   # or linux-
 cmake --build --preset linux && ctest --preset linux
 ```
 
-`build.cmd [all|windows|linux] [cpu] [test]` builds the `vs2026` preset and then, under WSL
+`build.cmd [all|windows|linux] [gpu|cpu] [test]` builds the `vs2026` preset and then, under WSL
 (`FASTERNGIO_WSL_DISTRO`, default Ubuntu), runs `tools/build_linux.sh`, which also builds natively. It
 takes `VCPKG_ROOT`, `VULKAN_HEADERS_DIR`, `FASTERNGIO_DXC_EXECUTABLE` and `FASTERNGIO_BUILD_DIR` from
 the environment or from an untracked `build-linux.env` in the repository root; keep machine paths there.
@@ -53,18 +55,19 @@ directx-headers, directx-dxc, flecs, boost-container-hash, nlohmann-json, sqlite
 directxmath. Vulkan headers must include `VK_EXT_descriptor_heap` (Vulkan SDK 1.4.357 or the matching
 Vulkan-Headers tag); distribution headers are usually too old. Off Windows, DirectX-Headers'
 `wsl/winadapter.h` supplies the Win32 scalar types the shared libraries use. `vs2026-clangcl` builds
-with `-Werror`.
+with `-Werror`; GCC and Clang get `-Wall -Wextra`, and `-Werror` with `FASTERNGIO_WARNINGS_AS_ERRORS`.
 
 Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
 
 - **Windows:** the HLSL and the DXC runtime (`dxcompiler.dll`, `dxil.dll`); the library is compiled
-  for D3D12 or Vulkan at startup, with a disk cache.
+  for D3D12 or Vulkan at startup, with a disk cache in the per-user cache folder (`Platform::CacheDirectory`:
+  `%LOCALAPPDATA%\FasterNGIO\shadercache`), since the program folder may be read-only.
 - **Elsewhere** (`FASTERNGIO_PRECOMPILED_SHADERS`, which can also be turned on in a Windows build to
   test it): Vulkan only, with every `QUERY_RAY`/`DEBUG_QUERIES` variant compiled to
   `shaders/GrassRejection.<ray|shape>[.debug].spv` at build time, so the executable needs no DXC.
   The build-time `dxc` is vcpkg's unless `FASTERNGIO_DXC_EXECUTABLE` names another; vcpkg's Linux
   binary needs glibc 2.38, and conda-forge's `directx-shader-compiler` runs on older systems. A new
-  shader define needs a variant in `apps/FasterNGIO/CMakeLists.txt` and `GpuRejector`'s
+  shader define needs a variant in `apps/FasterNGIO/CMakeLists.txt` and in `Gpu/GpuShaders.cpp`'s
   `LoadShaderLibrary`.
 - **Linux binaries** link libstdc++ and libgcc statically and need only glibc and a Vulkan driver.
 
@@ -89,15 +92,25 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   rejected blade; FasterNGIO deliberately keeps the vanilla layout and only drops blades.
 - **One source of geometric truth.** Exact overlap tests live in `shaders/Shared/GrassQueryMath.hlsli`
   and are compiled by the GPU, the CPU BVH and the brute-force reference (`PrimitiveTests.h` wraps
-  them per primitive). Change them there, never in one copy.
+  them per primitive). That includes the hull test, a template over how each side stores hulls
+  (`BufferHull` in the shader, `ModelHull` in C++). Change them there, never in one copy. Likewise the
+  buffer layouts the C++ fills and the shader reads (model records, root constants, debug records) are
+  defined once, in `shaders/Shared/RejectionLayout.hlsli`.
 - **Arguments mean the command line, unchanged.** No arguments (or `--gui`) opens the launcher; any
   other arguments, as MO2 passes them, must behave exactly as before. The launcher only builds
-  `CliOptions` and calls `App::Run`, so anything generation does belongs in `Generate.cpp`, not `Gui/`.
+  `GenerateOptions` and calls `App::Run`, so anything generation does belongs in `FasterNGIOApp`
+  (`Generate.cpp`, `WorldSetup.cpp`), not `Gui/`.
   A world's output must not depend on whether it ran alone or under `--world all`.
+- **Mod Organizer 2 only supplies defaults.** Under MO2 (usvfs is loaded), `Platform::DetectModOrganizer`
+  reads the instance's `ModOrganizer.ini`: its game, its selected profile's `plugins.txt` and
+  (`LocalSettings`) INIs. The CLI uses these only for a missing `--data`, `--plugins` or `--out`, and
+  never looks them up when all three are given; the launcher shows them in place of the game folder.
+  Output still goes through the VFS (`Data\Grass`, which MO2 sends to Overwrite), as NGIO's own
+  pregeneration does.
 - **Fallback is decided up front.** `GpuRejector` checks every feature it needs before any work is
   posted and throws `GpuUnsupportedError` listing what is missing; `--reject auto` then uses the CPU
   BVH. Add any new GPU requirement to that check.
-- **Files are written by the writer threads.** `Pipeline::CacheWriter` (one thread by default,
+- **Files are written by the writer threads.** `Pipeline::FileWriterPool` (one thread by default,
   `--writers`) writes every `.cgid`, one call per file; workers only serialize and queue, and suspend
   in the graph while the backlog is over budget. File creation is serialized by NTFS and antivirus
   scanning (about 150-300 us per file here, whatever the thread count), so it bounds a full run; a

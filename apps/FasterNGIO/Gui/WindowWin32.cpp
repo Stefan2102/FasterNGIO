@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND a_window, UINT a_message, WPARAM a_wParam, LPARAM a_lParam);
 
@@ -34,6 +35,31 @@ namespace FasterNGIO::Gui
 		};
 
 		D3D* g_d3d = nullptr;
+
+		// Runs a function when the scope ends, however it ends.
+		template <class Function>
+		class ScopeExit
+		{
+		public:
+			explicit ScopeExit(Function a_function) :
+				_function(std::move(a_function)) {}
+			ScopeExit(const ScopeExit&) = delete;
+			ScopeExit& operator=(const ScopeExit&) = delete;
+			~ScopeExit() { _function(); }
+
+		private:
+			Function _function;
+		};
+
+		// A double-clicked console program gets a console of its own; close it so only the window
+		// shows. A console shared with a shell (run from a prompt) stays.
+		void ReleaseOwnConsole()
+		{
+			DWORD processes[2]{};
+			if (GetConsoleProcessList(processes, 2) == 1) {
+				FreeConsole();
+			}
+		}
 
 		void CreateTarget(D3D& a_d3d)
 		{
@@ -116,39 +142,47 @@ namespace FasterNGIO::Gui
 	void RunWindow(const char* a_title, int a_width, int a_height, const WindowCallbacks& a_callbacks)
 	{
 		ImGui_ImplWin32_EnableDpiAwareness();
-		CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+		const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+		const ScopeExit comScope([com] {
+			if (SUCCEEDED(com)) {
+				CoUninitialize();
+			}
+		});
 
 		const auto instance = GetModuleHandleW(nullptr);
 		WNDCLASSEXW windowClass{ sizeof(windowClass), CS_CLASSDC, WindowProc, 0, 0, instance, nullptr, LoadCursor(nullptr, IDC_ARROW), nullptr, nullptr,
 			L"FasterNGIO", nullptr };
 		windowClass.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
 		RegisterClassExW(&windowClass);
+		const ScopeExit classScope([&] { UnregisterClassW(windowClass.lpszClassName, instance); });
 
 		const float scale = ImGui_ImplWin32_GetDpiScaleForMonitor(MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY));
 		const auto title = Wide(a_title);
 		HWND window = CreateWindowW(windowClass.lpszClassName, title.c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, static_cast<int>(a_width * scale),
 			static_cast<int>(a_height * scale), nullptr, nullptr, instance, nullptr);
 		if (!window) {
-			UnregisterClassW(windowClass.lpszClassName, instance);
 			throw std::runtime_error("could not create the launcher window");
 		}
+		const ScopeExit windowScope([window] { DestroyWindow(window); });
 
 		D3D d3d;
-		try {
-			CreateDevice(window, d3d);
-		} catch (...) {
-			DestroyWindow(window);
-			UnregisterClassW(windowClass.lpszClassName, instance);
-			throw;
-		}
+		CreateDevice(window, d3d);
 		g_d3d = &d3d;
+		const ScopeExit d3dScope([] { g_d3d = nullptr; });
 		ShowWindow(window, SW_SHOWDEFAULT);
 		UpdateWindow(window);
+		// The window is up: errors from here on show in it, so a console of its own can go.
+		ReleaseOwnConsole();
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 		ImGui_ImplWin32_Init(window);
 		ImGui_ImplDX11_Init(d3d.device.Get(), d3d.context.Get());
+		const ScopeExit imguiScope([] {
+			ImGui_ImplDX11_Shutdown();
+			ImGui_ImplWin32_Shutdown();
+			ImGui::DestroyContext();
+		});
 		a_callbacks.setup(ImGui_ImplWin32_GetDpiScaleForHwnd(window));
 
 		bool running = true;
@@ -193,14 +227,6 @@ namespace FasterNGIO::Gui
 			}
 		}
 
-		ImGui_ImplDX11_Shutdown();
-		ImGui_ImplWin32_Shutdown();
-		ImGui::DestroyContext();
-		g_d3d = nullptr;
-		d3d = D3D{};
-		DestroyWindow(window);
-		UnregisterClassW(windowClass.lpszClassName, instance);
-		CoUninitialize();
 	}
 
 	bool CanPickFolder()

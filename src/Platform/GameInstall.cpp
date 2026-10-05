@@ -1,17 +1,11 @@
 #include "Platform/GameInstall.h"
 
 #include "Platform/DataDirectory.h"
+#include "Platform/FileSystem.h"
+#include "Platform/Text.h"
 
-#include <algorithm>
-#include <cctype>
 #include <cstdlib>
 #include <format>
-#include <system_error>
-
-#if defined(_WIN32)
-#include <Windows.h>
-#include <ShlObj.h>
-#endif
 
 namespace FasterNGIO::Platform
 {
@@ -19,41 +13,11 @@ namespace FasterNGIO::Platform
 	{
 		constexpr std::string_view kSteamAppId = "489830";
 
-		[[nodiscard]] bool IsDirectory(const std::filesystem::path& a_path)
-		{
-			std::error_code error;
-			return !a_path.empty() && std::filesystem::is_directory(a_path, error);
-		}
-
-		[[nodiscard]] bool IEquals(std::string_view a_lhs, std::string_view a_rhs)
-		{
-			return std::ranges::equal(a_lhs, a_rhs, [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
-		}
-
-		[[nodiscard]] std::string Utf8(const std::filesystem::path& a_path)
-		{
-			const auto text = a_path.u8string();
-			return std::string(reinterpret_cast<const char*>(text.data()), text.size());
-		}
-
 		[[nodiscard]] UserFolders PrefixUserFolders(const std::filesystem::path& a_prefix)
 		{
 			const auto user = a_prefix / "drive_c" / "users" / "steamuser";
 			return UserFolders{ .localAppData = user / "AppData" / "Local", .documents = user / "Documents" };
 		}
-
-#if defined(_WIN32)
-		[[nodiscard]] std::filesystem::path KnownFolder(REFKNOWNFOLDERID a_id)
-		{
-			PWSTR path = nullptr;
-			std::filesystem::path result;
-			if (SUCCEEDED(SHGetKnownFolderPath(a_id, 0, nullptr, &path)) && path) {
-				result = path;
-			}
-			CoTaskMemFree(path);
-			return result;
-		}
-#endif
 
 		[[nodiscard]] GameStore DetectStore(const std::filesystem::path& a_root)
 		{
@@ -103,7 +67,7 @@ namespace FasterNGIO::Platform
 	UserFolders DefaultUserFolders()
 	{
 #if defined(_WIN32)
-		return UserFolders{ .localAppData = KnownFolder(FOLDERID_LocalAppData), .documents = KnownFolder(FOLDERID_Documents) };
+		return UserFolders{ .localAppData = LocalAppDataDirectory(), .documents = DocumentsDirectory() };
 #else
 		const char* home = std::getenv("HOME");
 		if (!home || !*home) {

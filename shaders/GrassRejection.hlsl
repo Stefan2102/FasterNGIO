@@ -10,18 +10,8 @@
 // descriptor heap index). Each BLAS geometry is one primitive kind with its own hit group.
 
 #include "Shared/GrassQueryMath.hlsli"
+#include "Shared/RejectionLayout.hlsli"
 
-struct RootConstants
-{
-	uint tlas;
-	uint candidates;
-	uint output;
-	uint candidateCount;
-	float segmentLength;
-	// Diagnostics: the frame-global candidate index to record, or 0xFFFFFFFF.
-	uint debugCandidate;
-	uint debugBuffer;
-};
 ConstantBuffer<RootConstants> g_constants : register(b0);
 
 struct Payload
@@ -60,10 +50,10 @@ void WriteDebug(uint stage, uint instance, uint primitive, uint result, float4 p
 	RWByteAddressBuffer debug = ResourceDescriptorHeap[g_constants.debugBuffer];
 	uint slot;
 	debug.InterlockedAdd(0, 1, slot);
-	if (slot >= 255) {
+	if (slot >= kDebugMaxRecords) {
 		return;
 	}
-	uint base = 16 + slot * 96;
+	uint base = kDebugHeaderBytes + slot * kDebugRecordBytes;
 	debug.Store4(base, uint4(stage, instance, primitive, result));
 	debug.Store4(base + 16, asuint(p));
 	debug.Store4(base + 32, asuint(q));
@@ -77,18 +67,6 @@ uint CurrentCandidate()
 	return DispatchRaysIndex().x;
 }
 #endif
-
-// Model buffer header (byte offsets/counts).
-static const uint kTrianglesOffset = 0;
-static const uint kTriangleCount = 4;
-static const uint kHullsOffset = 8;
-static const uint kHullCount = 12;
-static const uint kCapsulesOffset = 16;
-static const uint kCapsuleCount = 20;
-static const uint kTriangleStride = 40;  // float3 x3, radius
-static const uint kHullStride = 32;      // planeOffset, planeCount, triangleOffset, triangleCount, radius, pad x3
-static const uint kHullTriangleStride = 36;
-static const uint kCapsuleStride = 32;   // float3 p0, float3 p1, radius, pad
 
 struct QuerySegment
 {
@@ -192,7 +170,7 @@ void TriangleIntersection()
 {
 	QuerySegment s = ObjectQuery();
 	ByteAddressBuffer model = ModelBuffer();
-	uint offset = model.Load(kTrianglesOffset) + PrimitiveIndex() * kTriangleStride;
+	uint offset = model.Load(kModelTrianglesOffset) + PrimitiveIndex() * kTriangleStride;
 	float3 a = asfloat(model.Load3(offset));
 	float3 b = asfloat(model.Load3(offset + 12));
 	float3 c = asfloat(model.Load3(offset + 24));
@@ -208,49 +186,58 @@ void TriangleIntersection()
 	}
 }
 
-bool HullContains(ByteAddressBuffer model, uint planeOffset, uint planeCount, float3 x)
+// A hull record of this instance's model buffer, as the shared hull tests read it.
+struct BufferHull
 {
-	for (uint i = 0; i < planeCount; ++i) {
-		if (OutsidePlane(asfloat(model.Load4(planeOffset + i * 16)), x)) {
-			return false;
-		}
+	uint planeOffset;
+	uint planeCount;
+	uint faceOffset;
+	uint faceCount;
+	float radius;
+
+	uint PlaneCount() { return planeCount; }
+	float4 Plane(uint i) { return asfloat(ModelBuffer().Load4(planeOffset + i * kHullPlaneStride)); }
+	uint FaceCount() { return faceCount; }
+	HullFace Face(uint i)
+	{
+		ByteAddressBuffer model = ModelBuffer();
+		uint offset = faceOffset + i * kHullFaceStride;
+		HullFace face;
+		face.a = asfloat(model.Load3(offset));
+		face.b = asfloat(model.Load3(offset + 12));
+		face.c = asfloat(model.Load3(offset + 24));
+		return face;
 	}
-	return true;
-}
+	float Radius() { return radius; }
+};
 
 [shader("intersection")]
 void HullIntersection()
 {
 	QuerySegment s = ObjectQuery();
 	ByteAddressBuffer model = ModelBuffer();
-	uint offset = model.Load(kHullsOffset) + PrimitiveIndex() * kHullStride;
-	uint4 hull = model.Load4(offset);
-	float radius = asfloat(model.Load(offset + 16));
+	uint offset = model.Load(kModelHullsOffset) + PrimitiveIndex() * kHullStride;
+	uint4 record = model.Load4(offset);
+	BufferHull hull;
+	hull.planeOffset = record.x;
+	hull.planeCount = record.y;
+	hull.faceOffset = record.z;
+	hull.faceCount = record.w;
+	hull.radius = asfloat(model.Load(offset + 16));
 #if DEBUG_QUERIES
 	if (IsDebugCandidate(CurrentCandidate())) {
-		WriteDebug(2, InstanceID(), PrimitiveIndex(), hull.w, float4(s.p, s.r), float4(s.q, radius), float4(float3(hull.xyz), float(hull.w)),
-			asfloat(model.Load4(hull.x)), float4(asfloat(model.Load3(hull.z)), 0));
+		WriteDebug(2, InstanceID(), PrimitiveIndex(), record.w, float4(s.p, s.r), float4(s.q, hull.radius), float4(float3(record.xyz), float(record.w)),
+			asfloat(model.Load4(record.x)), float4(asfloat(model.Load3(record.z)), 0));
+		for (uint i = 0; i < hull.FaceCount(); ++i) {
+			HullFace face = hull.Face(i);
+			WriteDebug(4, i, hull.faceOffset + i * kHullFaceStride, CapsuleOverlapsTriangle(s.p, s.q, s.r, face.a, face.b, face.c, hull.radius) ? 1u : 0u,
+				float4(s.p, sqrt(SegmentTriangleDistanceSq(s.p, s.q, face.a, face.b, face.c))), float4(s.q, hull.radius), float4(face.a, 0), float4(face.b, 0),
+				float4(face.c, 0));
+		}
 	}
 #endif
-	if (HullContains(model, hull.x, hull.y, s.p) || HullContains(model, hull.x, hull.y, s.q)) {
+	if (CapsuleOverlapsHull(s.p, s.q, s.r, hull)) {
 		Accept();
-		return;
-	}
-	for (uint i = 0; i < hull.w; ++i) {
-		uint face = hull.z + i * kHullTriangleStride;
-		float3 a = asfloat(model.Load3(face));
-		float3 b = asfloat(model.Load3(face + 12));
-		float3 c = asfloat(model.Load3(face + 24));
-#if DEBUG_QUERIES
-		if (IsDebugCandidate(CurrentCandidate())) {
-			WriteDebug(4, i, face, CapsuleOverlapsTriangle(s.p, s.q, s.r, a, b, c, radius) ? 1u : 0u, float4(s.p, sqrt(SegmentTriangleDistanceSq(s.p, s.q, a, b, c))),
-				float4(s.q, radius), float4(a, 0), float4(b, 0), float4(c, 0));
-		}
-#endif
-		if (CapsuleOverlapsTriangle(s.p, s.q, s.r, a, b, c, radius)) {
-			Accept();
-			return;
-		}
 	}
 }
 
@@ -259,7 +246,7 @@ void CapsuleIntersection()
 {
 	QuerySegment s = ObjectQuery();
 	ByteAddressBuffer model = ModelBuffer();
-	uint offset = model.Load(kCapsulesOffset) + PrimitiveIndex() * kCapsuleStride;
+	uint offset = model.Load(kModelCapsulesOffset) + PrimitiveIndex() * kCapsuleStride;
 	float3 a = asfloat(model.Load3(offset));
 	float3 b = asfloat(model.Load3(offset + 12));
 	float radius = asfloat(model.Load(offset + 24));

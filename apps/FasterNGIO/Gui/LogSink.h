@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Pipeline/MpscQueue.h"
+#include "Concurrency/MpscQueue.h"
 
 #include <spdlog/sinks/sink.h>
 
@@ -35,6 +35,6 @@ namespace FasterNGIO::Gui
 		[[nodiscard]] std::optional<LogLine> TryPop() { return _queue.TryPop(); }
 
 	private:
-		Pipeline::MpscQueue<LogLine> _queue;
+		Concurrency::MpscQueue<LogLine> _queue;
 	};
 }

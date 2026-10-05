@@ -1,49 +1,18 @@
 #include "Platform/UserSettings.h"
 
-#include <cstdlib>
+#include "Platform/FileSystem.h"
+#include "Platform/Text.h"
+
 #include <fstream>
 #include <sstream>
 #include <system_error>
 
-#if defined(_WIN32)
-#include <Windows.h>
-#include <ShlObj.h>
-#endif
-
 namespace FasterNGIO::Platform
 {
-	namespace
-	{
-		[[nodiscard]] std::string_view Trim(std::string_view a_text)
-		{
-			const auto first = a_text.find_first_not_of(" \t\r");
-			if (first == std::string_view::npos) {
-				return {};
-			}
-			const auto last = a_text.find_last_not_of(" \t\r");
-			return a_text.substr(first, last - first + 1);
-		}
-	}
-
 	std::filesystem::path UserSettings::DefaultPath()
 	{
-#if defined(_WIN32)
-		PWSTR localAppData = nullptr;
-		std::filesystem::path result;
-		if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &localAppData)) && localAppData) {
-			result = std::filesystem::path(localAppData) / "FasterNGIO" / "settings.ini";
-		}
-		CoTaskMemFree(localAppData);
-		return result;
-#else
-		if (const char* config = std::getenv("XDG_CONFIG_HOME"); config && *config) {
-			return std::filesystem::path(config) / "fasterngio" / "settings.ini";
-		}
-		if (const char* home = std::getenv("HOME"); home && *home) {
-			return std::filesystem::path(home) / ".config" / "fasterngio" / "settings.ini";
-		}
-		return {};
-#endif
+		const auto directory = SettingsDirectory();
+		return directory.empty() ? directory : directory / "settings.ini";
 	}
 
 	UserSettings UserSettings::Load(const std::filesystem::path& a_path)
@@ -115,20 +84,5 @@ namespace FasterNGIO::Platform
 		std::string value(a_value);
 		std::erase_if(value, [](char c) { return c == '\r' || c == '\n'; });
 		_values.insert_or_assign(std::string(a_key), std::move(value));
-	}
-
-	std::optional<std::filesystem::path> UserSettings::GetPath(std::string_view a_key) const
-	{
-		const auto value = Get(a_key);
-		if (!value || value->empty()) {
-			return std::nullopt;
-		}
-		return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(value->data()), value->size()));
-	}
-
-	void UserSettings::SetPath(std::string_view a_key, const std::filesystem::path& a_value)
-	{
-		const auto text = a_value.u8string();
-		Set(a_key, std::string_view(reinterpret_cast<const char*>(text.data()), text.size()));
 	}
 }

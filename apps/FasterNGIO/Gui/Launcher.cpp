@@ -1,18 +1,19 @@
 #include "Gui/Launcher.h"
 
 #include "Generate.h"
+#include "Gui/BackgroundTask.h"
+#include "Gui/LauncherSettings.h"
 #include "Gui/LogSink.h"
 #include "Gui/Window.h"
+#include "Platform/FileSystem.h"
 #include "Platform/GameInstall.h"
+#include "Platform/ModOrganizer.h"
+#include "Platform/Text.h"
 #include "Platform/UserSettings.h"
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
 #include <spdlog/spdlog.h>
-
-#if defined(_WIN32)
-#include <Windows.h>
-#endif
 
 #include <atomic>
 #include <charconv>
@@ -44,28 +45,10 @@ namespace FasterNGIO::Gui
 		constexpr const char* kDataGrass = "/Data/Grass";
 #endif
 
-		[[nodiscard]] std::string Utf8(const std::filesystem::path& a_path)
-		{
-			const auto text = a_path.u8string();
-			return std::string(reinterpret_cast<const char*>(text.data()), text.size());
-		}
-
-		[[nodiscard]] std::filesystem::path PathFromUtf8(const std::string& a_text)
-		{
-			return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(a_text.data()), a_text.size()));
-		}
-
-		[[nodiscard]] bool IsFile(const std::filesystem::path& a_path)
-		{
-			std::error_code error;
-			return !a_path.empty() && std::filesystem::is_regular_file(a_path, error);
-		}
-
-		[[nodiscard]] bool IsDirectory(const std::filesystem::path& a_path)
-		{
-			std::error_code error;
-			return !a_path.empty() && std::filesystem::is_directory(a_path, error);
-		}
+		using Platform::IsDirectory;
+		using Platform::IsFile;
+		using Platform::PathFromUtf8;
+		using Platform::Utf8;
 
 		// Enabled plugins are the lines plugins.txt marks with '*'; the base game's masters load
 		// whether listed or not.
@@ -85,55 +68,10 @@ namespace FasterNGIO::Gui
 			return total >= 60 ? std::format("{}m {:02}s", total / 60, total % 60) : std::format("{}s", total);
 		}
 
-		// Work on its own thread whose result the UI thread polls: the result is written before
-		// the state is published, so it may be read once Finished() is true.
-		template <class Result>
-		class BackgroundTask
-		{
-		public:
-			template <class Function>
-			explicit BackgroundTask(Function a_function) :
-				_thread([this, function = std::move(a_function)](std::stop_token a_stop) {
-					try {
-						_result.emplace(function(a_stop));
-						_state.store(State::Done, std::memory_order_release);
-					} catch (const std::exception& e) {
-						_error = e.what();
-						_state.store(State::Failed, std::memory_order_release);
-					}
-				})
-			{
-			}
-
-			BackgroundTask(const BackgroundTask&) = delete;
-			BackgroundTask& operator=(const BackgroundTask&) = delete;
-
-			[[nodiscard]] bool Finished() const { return _state.load(std::memory_order_acquire) != State::Running; }
-			[[nodiscard]] bool Failed() const { return _state.load(std::memory_order_acquire) == State::Failed; }
-			// Only once Finished().
-			[[nodiscard]] const std::optional<Result>& Value() const { return _result; }
-			[[nodiscard]] const std::string& Error() const { return _error; }
-			void RequestStop() { _thread.request_stop(); }
-
-		private:
-			enum class State
-			{
-				Running,
-				Done,
-				Failed
-			};
-
-			std::atomic<State> _state{ State::Running };
-			std::optional<Result> _result;
-			std::string _error;
-			// Last: it starts running once everything above exists, and joins first on destruction.
-			std::jthread _thread;
-		};
-
 		// The plugins read for the worldspace list, kept for the run when its inputs still match.
 		struct Scan
 		{
-			std::shared_ptr<const App::LoadedWorld> world;
+			std::shared_ptr<const App::LoadedPlugins> world;
 			std::vector<App::WorldSummary> worlds;
 		};
 
@@ -142,12 +80,6 @@ namespace FasterNGIO::Gui
 			std::filesystem::path data;
 			std::filesystem::path pluginsTxt;
 			bool operator==(const ScanKey&) const = default;
-		};
-
-		enum class Placement
-		{
-			Smooth,
-			Vanilla
 		};
 
 		class Launcher
@@ -159,6 +91,7 @@ namespace FasterNGIO::Gui
 			{
 				spdlog::default_logger()->sinks().push_back(_sink);
 				LoadSettings();
+				DetectModOrganizer();
 			}
 
 			~Launcher()
@@ -217,24 +150,24 @@ namespace FasterNGIO::Gui
 
 			[[nodiscard]] std::filesystem::path PluginsTxt() const
 			{
-				if (!_pluginsOverride.empty()) {
-					return PathFromUtf8(_pluginsOverride);
+				if (!_inputs.pluginsTxt.empty()) {
+					return PathFromUtf8(_inputs.pluginsTxt);
 				}
 				return _install ? _install->pluginsTxt : std::filesystem::path{};
 			}
 
 			[[nodiscard]] std::filesystem::path OutputFolder() const
 			{
-				if (!_output.empty()) {
-					return PathFromUtf8(_output);
+				if (!_inputs.outputFolder.empty()) {
+					return PathFromUtf8(_inputs.outputFolder);
 				}
 				return _install ? _install->data / "Grass" : std::filesystem::path{};
 			}
 
 			[[nodiscard]] std::optional<std::filesystem::path> IniFolder() const
 			{
-				if (!_iniOverride.empty()) {
-					return PathFromUtf8(_iniOverride);
+				if (!_inputs.gameIniFolder.empty()) {
+					return PathFromUtf8(_inputs.gameIniFolder);
 				}
 				if (_install && IsDirectory(_install->iniDirectory)) {
 					return _install->iniDirectory;
@@ -256,7 +189,7 @@ namespace FasterNGIO::Gui
 			// Re-validates the game folder when an input changed; only filesystem checks.
 			void UpdateInspection()
 			{
-				const auto signature = _game + '\n' + _pluginsOverride;
+				const auto signature = (_mo2 ? std::string("\x02") : _inputs.gameFolder) + '\n' + _inputs.pluginsTxt;
 				if (signature == _inspectedSignature) {
 					// plugins.txt appears once the game or a mod manager has run; look again now and then.
 					if (_install && !_pluginsFound && Clock::now() - _lastPluginsCheck > std::chrono::seconds(2)) {
@@ -270,15 +203,19 @@ namespace FasterNGIO::Gui
 				_lastEdit = Clock::now();
 				_install.reset();
 				_installError.clear();
-				if (_game.empty()) {
-					return;
+				if (_mo2) {
+					_install = _mo2->game;
+				} else {
+					if (_inputs.gameFolder.empty()) {
+						return;
+					}
+					auto inspected = Platform::InspectGameFolder(PathFromUtf8(_inputs.gameFolder));
+					if (!inspected) {
+						_installError = inspected.error();
+						return;
+					}
+					_install = std::move(*inspected);
 				}
-				auto inspected = Platform::InspectGameFolder(PathFromUtf8(_game));
-				if (!inspected) {
-					_installError = inspected.error();
-					return;
-				}
-				_install = std::move(*inspected);
 				_pluginsFound = PluginsTxtFound();
 				_enabledPlugins = _pluginsFound ? CountEnabledPlugins(PluginsTxt()) : 0;
 			}
@@ -302,11 +239,11 @@ namespace FasterNGIO::Gui
 				}
 				_scanKey = *key;
 				_scanErrorLogged = false;
-				App::CliOptions options;
+				App::GenerateOptions options;
 				options.dataPath = key->data;
 				options.pluginsTxtPath = key->pluginsTxt;
 				_scan = std::make_unique<BackgroundTask<Scan>>([options](std::stop_token) {
-					auto world = std::make_shared<App::LoadedWorld>(App::LoadStaticSnapshot(options));
+					auto world = std::make_shared<App::LoadedPlugins>(App::LoadStaticSnapshot(options));
 					auto worlds = App::ListWorlds(world->snapshot);
 					return Scan{ std::move(world), std::move(worlds) };
 				});
@@ -339,20 +276,20 @@ namespace FasterNGIO::Gui
 			void StartRun()
 			{
 				SaveSettings();
-				App::CliOptions options;
+				App::GenerateOptions options;
 				options.dataPath = _install->data;
 				options.pluginsTxtPath = PluginsTxt();
 				options.outputDirectory = OutputFolder();
-				options.allWorlds = !_world.has_value();
-				if (_world) {
-					options.worldFormID = GameData::FormID{ *_world };
+				options.allWorlds = !_inputs.world.has_value();
+				if (_inputs.world) {
+					options.worldFormID = GameData::FormID{ *_inputs.world };
 				}
-				options.placement.mode = _placement == Placement::Vanilla ? Grass::PlacementMode::Vanilla : Grass::PlacementMode::Smooth;
-				options.rejection = _rejection;
-				options.overwrite = _overwrite;
+				options.placement.mode = _inputs.placement;
+				options.rejection = _inputs.rejection;
+				options.overwrite = _inputs.overwrite;
 				options.gameIniDirectory = IniFolder();
 
-				std::shared_ptr<const App::LoadedWorld> preloaded;
+				std::shared_ptr<const App::LoadedPlugins> preloaded;
 				if (const auto* scan = FinishedScan(); scan && CurrentScanKey() == _scanKey) {
 					preloaded = scan->world;
 				}
@@ -395,49 +332,34 @@ namespace FasterNGIO::Gui
 				_run.reset();
 			}
 
+			// --- Mod Organizer 2 ----------------------------------------------------------------
+
+			// Started from MO2, the game, load order and INIs come from its instance and profile, as
+			// xEdit's do; the remembered game folder is left alone for runs outside MO2.
+			void DetectModOrganizer()
+			{
+				const auto detected = Platform::DetectModOrganizer();
+				if (!detected) {
+					return;
+				}
+				if (*detected) {
+					_mo2 = **detected;
+					spdlog::info("started from Mod Organizer 2: {} ({})", _mo2->Describe(), Utf8(_mo2->game.root));
+				} else {
+					_mo2Problem = detected->error();
+					spdlog::warn("started from Mod Organizer 2, but its instance could not be read: {}", _mo2Problem);
+				}
+			}
+
 			// --- Settings -----------------------------------------------------------------------
 
 			void LoadSettings()
 			{
-				const auto settings = Platform::UserSettings::Load(_settingsPath);
-				_game = settings.Get("game_folder").value_or("");
-				_output = settings.Get("output_folder").value_or("");
-				_pluginsOverride = settings.Get("plugins_txt").value_or("");
-				_iniOverride = settings.Get("game_ini_folder").value_or("");
-				_placement = settings.Get("placement") == "vanilla" ? Placement::Vanilla : Placement::Smooth;
-				const auto rejection = settings.Get("rejection").value_or("auto");
-				_rejection = rejection == "cpu" ? App::RejectChoice::Cpu : rejection == "none" ? App::RejectChoice::None : App::RejectChoice::Auto;
-#if FASTERNGIO_HAS_GPU
-				if (rejection == "gpu") {
-					_rejection = App::RejectChoice::Gpu;
-				}
-#endif
-				_overwrite = settings.Get("overwrite") == "1";
-				if (const auto world = settings.Get("world"); world && *world != "all") {
-					std::uint32_t value = 0;
-					if (std::from_chars(world->data(), world->data() + world->size(), value, 16).ec == std::errc{}) {
-						_world = value;
-					}
-				}
-				_showAdvanced = !_pluginsOverride.empty() || !_iniOverride.empty();
+				_inputs = LauncherSettings::Load(_settingsPath);
+				_showAdvanced = !_inputs.pluginsTxt.empty() || !_inputs.gameIniFolder.empty();
 			}
 
-			void SaveSettings() const
-			{
-				Platform::UserSettings settings;
-				settings.Set("game_folder", _game);
-				settings.Set("output_folder", _output);
-				settings.Set("plugins_txt", _pluginsOverride);
-				settings.Set("game_ini_folder", _iniOverride);
-				settings.Set("placement", _placement == Placement::Vanilla ? "vanilla" : "smooth");
-				settings.Set("rejection", _rejection == App::RejectChoice::Cpu    ? "cpu"
-				                          : _rejection == App::RejectChoice::None ? "none"
-				                          : _rejection == App::RejectChoice::Gpu  ? "gpu"
-				                                                                  : "auto");
-				settings.Set("overwrite", _overwrite ? "1" : "0");
-				settings.Set("world", _world ? std::format("{:08X}", *_world) : std::string("all"));
-				settings.Save(_settingsPath);
-			}
+			void SaveSettings() const { _inputs.Save(_settingsPath); }
 
 			// --- Log ----------------------------------------------------------------------------
 
@@ -488,9 +410,20 @@ namespace FasterNGIO::Gui
 			void DrawGame()
 			{
 				ImGui::SeparatorText("Skyrim Special Edition");
+				if (_mo2) {
+					StatusLine(true, std::format("Mod Organizer 2: {}. {} version in {}. Load order: {} enabled plugin(s).", _mo2->Describe(),
+										 Platform::GameStoreName(_mo2->game.store), Utf8(_mo2->game.root), _enabledPlugins));
+					if (ImGui::SmallButton("Choose a game folder instead")) {
+						_mo2.reset();
+					}
+					return;
+				}
+				if (!_mo2Problem.empty()) {
+					StatusLine(false, std::format("Started from Mod Organizer 2, but its instance could not be read: {}", _mo2Problem));
+				}
 				ImGui::TextUnformatted("Game folder (the one with SkyrimSE.exe):");
-				FolderField("##game", _game, kExampleGameFolder, "Choose the Skyrim Special Edition folder");
-				if (_game.empty()) {
+				FolderField("##game", _inputs.gameFolder, kExampleGameFolder, "Choose the Skyrim Special Edition folder");
+				if (_inputs.gameFolder.empty()) {
 					ImGui::TextDisabled("Choose the folder Skyrim Special Edition is installed in.");
 				} else if (!_install) {
 					StatusLine(false, _installError);
@@ -508,8 +441,11 @@ namespace FasterNGIO::Gui
 			{
 				ImGui::SeparatorText("Output");
 				const auto defaultOutput = _install ? Utf8(_install->data / "Grass") : std::string("<game folder>") + kDataGrass;
-				FolderField("##output", _output, defaultOutput.c_str(), "Choose where to write the grass cache");
+				FolderField("##output", _inputs.outputFolder, defaultOutput.c_str(), "Choose where to write the grass cache");
 				ImGui::TextDisabled("Leave empty for %s, where NGIO's own pregeneration writes and where NGIO and DynDOLOD read the cache.", kDataGrass + 1);
+				if (_mo2) {
+					ImGui::TextDisabled("Under Mod Organizer 2, new files go to its Overwrite folder (or the mod chosen in this executable's settings).");
+				}
 			}
 
 			void DrawOptions()
@@ -525,18 +461,18 @@ namespace FasterNGIO::Gui
 				ImGui::SetNextItemWidth(fieldWidth);
 				const auto* scan = FinishedScan();
 				std::string preview = "All worldspaces";
-				if (_world) {
-					preview = WorldName(*_world);
+				if (_inputs.world) {
+					preview = WorldName(*_inputs.world);
 				}
 				if (ImGui::BeginCombo("##world", preview.c_str())) {
-					if (ImGui::Selectable("All worldspaces", !_world)) {
-						_world.reset();
+					if (ImGui::Selectable("All worldspaces", !_inputs.world)) {
+						_inputs.world.reset();
 					}
 					if (scan) {
 						for (const auto& world : scan->worlds) {
 							const auto label = std::format("{}  ({} cells)##{:08X}", world.editorID, world.cells, world.formID.value);
-							if (ImGui::Selectable(label.c_str(), _world == world.formID.value)) {
-								_world = world.formID.value;
+							if (ImGui::Selectable(label.c_str(), _inputs.world == world.formID.value)) {
+								_inputs.world = world.formID.value;
 							}
 						}
 					} else if (_scan && _scan->Failed()) {
@@ -555,9 +491,9 @@ namespace FasterNGIO::Gui
 				ImGui::SameLine(labelWidth);
 				ImGui::SetNextItemWidth(fieldWidth);
 				constexpr const char* kPlacements[] = { "Smooth (follows the painted terrain)", "Vanilla (identical to the game's)" };
-				int placement = static_cast<int>(_placement);
+				int placement = _inputs.placement == Grass::PlacementMode::Vanilla ? 1 : 0;
 				if (ImGui::Combo("##placement", &placement, kPlacements, IM_ARRAYSIZE(kPlacements))) {
-					_placement = static_cast<Placement>(placement);
+					_inputs.placement = placement == 1 ? Grass::PlacementMode::Vanilla : Grass::PlacementMode::Smooth;
 				}
 
 				// Rejection.
@@ -582,30 +518,30 @@ namespace FasterNGIO::Gui
 				};
 				const char* current = kChoices[0].label;
 				for (const auto& choice : kChoices) {
-					if (choice.value == _rejection) {
+					if (choice.value == _inputs.rejection) {
 						current = choice.label;
 					}
 				}
 				if (ImGui::BeginCombo("##rejection", current)) {
 					for (const auto& choice : kChoices) {
-						if (ImGui::Selectable(choice.label, choice.value == _rejection)) {
-							_rejection = choice.value;
+						if (ImGui::Selectable(choice.label, choice.value == _inputs.rejection)) {
+							_inputs.rejection = choice.value;
 						}
 					}
 					ImGui::EndCombo();
 				}
 
-				ImGui::Checkbox("Rebuild cache files that already exist", &_overwrite);
+				ImGui::Checkbox("Rebuild cache files that already exist", &_inputs.overwrite);
 
 				ImGui::SetNextItemOpen(_showAdvanced, ImGuiCond_Once);
 				if (ImGui::TreeNode("Advanced")) {
 					ImGui::TextUnformatted("Load order (plugins.txt):");
 					const auto pluginsHint = _install ? Utf8(_install->pluginsTxt) : std::string("derived from the game folder");
 					ImGui::SetNextItemWidth(-FLT_MIN);
-					ImGui::InputTextWithHint("##plugins", pluginsHint.c_str(), &_pluginsOverride);
+					ImGui::InputTextWithHint("##plugins", pluginsHint.c_str(), &_inputs.pluginsTxt);
 					ImGui::TextUnformatted("Game INI folder (Skyrim.ini's [Grass] settings):");
 					const auto iniHint = _install ? Utf8(_install->iniDirectory) : std::string("derived from the game folder");
-					FolderField("##ini", _iniOverride, iniHint.c_str(), "Choose the folder with Skyrim.ini");
+					FolderField("##ini", _inputs.gameIniFolder, iniHint.c_str(), "Choose the folder with Skyrim.ini");
 					ImGui::TreePop();
 				}
 			}
@@ -723,15 +659,11 @@ namespace FasterNGIO::Gui
 			std::shared_ptr<QueueSink> _sink;
 			std::filesystem::path _settingsPath;
 
-			// Inputs (UTF-8).
-			std::string _game;
-			std::string _output;
-			std::string _pluginsOverride;
-			std::string _iniOverride;
-			std::optional<std::uint32_t> _world;
-			Placement _placement{ Placement::Smooth };
-			App::RejectChoice _rejection{ App::RejectChoice::Auto };
-			bool _overwrite{ false };
+			LauncherSettings _inputs;
+			// Set when started from Mod Organizer 2 (until the user chooses a folder instead); the
+			// game folder field and its saved value are then not used.
+			std::optional<Platform::Mo2Instance> _mo2;
+			std::string _mo2Problem;
 			bool _showAdvanced{ false };
 
 			// Derived from the inputs.
@@ -760,23 +692,10 @@ namespace FasterNGIO::Gui
 			std::deque<LogLine> _log;
 			bool _scrollToBottom{ false };
 		};
-
-		// A double-clicked console program gets a console of its own; close it so only the window
-		// shows. A console shared with a shell (run from a prompt) stays.
-		void ReleaseOwnConsole()
-		{
-#if defined(_WIN32)
-			DWORD processes[2]{};
-			if (GetConsoleProcessList(processes, 2) == 1) {
-				FreeConsole();
-			}
-#endif
-		}
 	}
 
 	int RunLauncher()
 	{
-		ReleaseOwnConsole();
 		try {
 			Launcher launcher;
 			WindowCallbacks callbacks;

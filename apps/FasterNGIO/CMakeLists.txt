@@ -1,9 +1,27 @@
-add_executable(FasterNGIO
-	Main.cpp
+# Generation and the command line, without a window: what the executable runs and the tests link.
+add_library(FasterNGIOApp STATIC
+	CommandLine.cpp
+	CommandLine.h
+	Diagnostics.cpp
+	Diagnostics.h
 	Generate.cpp
 	Generate.h
+	Options.cpp
+	Options.h
+	WorldSetup.cpp
+	WorldSetup.h
+)
+fasterngio_configure_target(FasterNGIOApp)
+target_include_directories(FasterNGIOApp PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(FasterNGIOApp PUBLIC FasterNGIOCore FasterNGIOPipeline)
+
+add_executable(FasterNGIO
+	Main.cpp
+	Gui/BackgroundTask.h
 	Gui/Launcher.cpp
 	Gui/Launcher.h
+	Gui/LauncherSettings.cpp
+	Gui/LauncherSettings.h
 	Gui/LogSink.h
 	Gui/Window.h
 )
@@ -17,10 +35,8 @@ else()
 endif()
 find_package(imgui CONFIG REQUIRED)
 fasterngio_configure_target(FasterNGIO)
-target_include_directories(FasterNGIO PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(FasterNGIO PRIVATE FasterNGIOCore FasterNGIOPipeline imgui::imgui)
+target_link_libraries(FasterNGIO PRIVATE FasterNGIOApp imgui::imgui)
 if(FASTERNGIO_ENABLE_GPU)
-	target_link_libraries(FasterNGIO PRIVATE FasterNGIOGpu)
 	if(FASTERNGIO_RUNTIME_SHADER_COMPILER)
 		# The shader library is compiled at startup (and cached); DXC is loaded at runtime. A separate
 		# target so editing a shader alone still redeploys it (POST_BUILD only runs on relink).
@@ -32,7 +48,7 @@ if(FASTERNGIO_ENABLE_GPU)
 		install(DIRECTORY "${PROJECT_SOURCE_DIR}/shaders/" DESTINATION shaders COMPONENT FasterNGIO)
 		install(FILES ${FASTERNGIO_DXC_RUNTIME} DESTINATION . COMPONENT FasterNGIO)
 	else()
-		# Every variant GpuRejector can ask for (GpuRejector.cpp, PrecompiledShaderName), compiled with
+		# Every variant GpuRejector can ask for (GpuRejector.cpp, LoadShaderLibrary), compiled with
 		# the arguments ORGModuleServices' ShaderCompiler would use at runtime.
 		set(_shader_source "${PROJECT_SOURCE_DIR}/shaders/GrassRejection.hlsl")
 		set(_shader_output_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
@@ -55,7 +71,7 @@ if(FASTERNGIO_ENABLE_GPU)
 					COMMAND "${FASTERNGIO_DXC_EXECUTABLE}" -nologo -T lib_6_6 -HV 2021 -WX ${BASICRHI_VULKAN_DXC_FLAGS}
 						-D QUERY_RAY=${_query_ray} -D DEBUG_QUERIES=${_debug} -I "${PROJECT_SOURCE_DIR}/shaders"
 						-Fo "${_output}" "${_shader_source}"
-					DEPENDS "${_shader_source}" "${PROJECT_SOURCE_DIR}/shaders/Shared/GrassQueryMath.hlsli"
+					DEPENDS "${_shader_source}" "${PROJECT_SOURCE_DIR}/shaders/Shared/GrassQueryMath.hlsli" "${PROJECT_SOURCE_DIR}/shaders/Shared/RejectionLayout.hlsli"
 					COMMENT "SPIR-V ${_name}"
 					VERBATIM)
 				list(APPEND _shader_outputs "${_output}")

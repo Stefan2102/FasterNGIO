@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Grass/Placement.h"
 #include "Rejection/RejectionConfig.h"
 #include "Rejection/WorldIndex.h"
 
@@ -8,6 +7,11 @@
 #include <span>
 #include <string>
 #include <vector>
+
+namespace FasterNGIO::Grass
+{
+	struct CellCandidates;
+}
 
 namespace FasterNGIO::Rejection
 {

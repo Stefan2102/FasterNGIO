@@ -1,21 +1,15 @@
 #include "Archives/ArchiveResolver.h"
 
+#include "Platform/MappedFile.h"
+#include "Platform/Text.h"
+#include "Platform/WholeFile.h"
+
 #include <lz4frame.h>
 #include <spdlog/spdlog.h>
 #include <zlib.h>
 
-#if defined(_WIN32)
-#include <Windows.h>
-#else
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
-
 #include <algorithm>
 #include <cstring>
-#include <fstream>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -29,19 +23,20 @@ namespace FasterNGIO::Archives
 		constexpr std::uint32_t kFlagCompressedByDefault = 0x0004u;
 		constexpr std::uint32_t kFlagEmbeddedNames = 0x0100u;
 		constexpr std::uint32_t kSizeCompressionToggle = 0x40000000u;
+		constexpr std::size_t kHeaderSize = 36;
 
 		class ViewReader
 		{
 		public:
-			ViewReader(const std::uint8_t* a_data, std::uint64_t a_size, std::uint64_t a_offset = 0) :
-				_data(a_data), _size(a_size), _offset(a_offset) {}
+			ViewReader(std::span<const std::uint8_t> a_bytes, std::uint64_t a_offset = 0) :
+				_bytes(a_bytes), _offset(a_offset) {}
 
 			template <class T>
 			[[nodiscard]] T Read()
 			{
 				Require(sizeof(T));
 				T value{};
-				std::memcpy(std::addressof(value), _data + _offset, sizeof(T));
+				std::memcpy(std::addressof(value), _bytes.data() + _offset, sizeof(T));
 				_offset += sizeof(T);
 				return value;
 			}
@@ -49,15 +44,16 @@ namespace FasterNGIO::Archives
 			[[nodiscard]] std::string_view ReadBytes(std::uint64_t a_count)
 			{
 				Require(a_count);
-				const std::string_view bytes(reinterpret_cast<const char*>(_data + _offset), static_cast<std::size_t>(a_count));
+				const std::string_view bytes(reinterpret_cast<const char*>(_bytes.data() + _offset), static_cast<std::size_t>(a_count));
 				_offset += a_count;
 				return bytes;
 			}
 
 			[[nodiscard]] std::string_view ReadZString()
 			{
-				const auto* begin = _data + _offset;
-				const auto* end = static_cast<const std::uint8_t*>(std::memchr(begin, 0, static_cast<std::size_t>(_size - _offset)));
+				Require(0);
+				const auto* begin = _bytes.data() + _offset;
+				const auto* end = static_cast<const std::uint8_t*>(std::memchr(begin, 0, static_cast<std::size_t>(_bytes.size() - _offset)));
 				if (!end) {
 					throw std::runtime_error("unterminated name in BSA");
 				}
@@ -66,32 +62,46 @@ namespace FasterNGIO::Archives
 				return text;
 			}
 
-			void Seek(std::uint64_t a_offset) { _offset = a_offset; }
-
 		private:
 			void Require(std::uint64_t a_count) const
 			{
-				if (_offset + a_count > _size) {
+				if (_offset + a_count > _bytes.size()) {
 					throw std::runtime_error("unexpected end of BSA");
 				}
 			}
 
-			const std::uint8_t* _data;
-			std::uint64_t _size;
+			std::span<const std::uint8_t> _bytes;
 			std::uint64_t _offset;
 		};
-
-		[[nodiscard]] std::string LowerAscii(std::string_view a_text)
-		{
-			std::string result(a_text);
-			std::ranges::transform(result, result.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-			return result;
-		}
 	}
+
+	// A memory-mapped BSA (versions 103, 104 and 105). Entry reads are thread-safe.
+	class BsaArchive
+	{
+	public:
+		struct Entry
+		{
+			std::uint32_t size{ 0 };
+			std::uint32_t offset{ 0 };
+		};
+
+		// Throws std::runtime_error when the file is not a supported archive.
+		explicit BsaArchive(const std::filesystem::path& a_path);
+
+		[[nodiscard]] std::vector<std::uint8_t> Read(const Entry& a_entry) const;
+		// Canonical resource path and entry, in archive order.
+		[[nodiscard]] const std::vector<std::pair<std::string, Entry>>& Entries() const { return _entries; }
+
+	private:
+		Platform::MappedFile _file;
+		std::uint32_t _version{ 0 };
+		std::uint32_t _flags{ 0 };
+		std::vector<std::pair<std::string, Entry>> _entries;
+	};
 
 	std::string CanonicalizeResourcePath(std::string_view a_path)
 	{
-		std::string result = LowerAscii(a_path);
+		std::string result = Platform::LowerAscii(a_path);
 		std::ranges::replace(result, '/', '\\');
 		const auto first = result.find_first_not_of('\\');
 		if (first == std::string::npos) {
@@ -105,168 +115,78 @@ namespace FasterNGIO::Archives
 	}
 
 	BsaArchive::BsaArchive(const std::filesystem::path& a_path) :
-		_path(a_path)
+		_file(a_path, Platform::MappedFile::Access::Random)
 	{
-#if defined(_WIN32)
-		_file = CreateFileW(a_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS, nullptr);
-		if (_file == INVALID_HANDLE_VALUE) {
-			_file = nullptr;
-			throw std::runtime_error("failed to open");
-		}
-		LARGE_INTEGER size{};
-		if (!GetFileSizeEx(_file, &size) || size.QuadPart < 36) {
-			Close();
+		const auto bytes = _file.Bytes();
+		if (bytes.size() < kHeaderSize) {
 			throw std::runtime_error("file too small");
 		}
-		_viewSize = static_cast<std::uint64_t>(size.QuadPart);
-		_mapping = CreateFileMappingW(_file, nullptr, PAGE_READONLY, 0, 0, nullptr);
-		_view = _mapping ? static_cast<const std::uint8_t*>(MapViewOfFile(_mapping, FILE_MAP_READ, 0, 0, 0)) : nullptr;
-#else
-		_descriptor = ::open(a_path.c_str(), O_RDONLY | O_CLOEXEC);
-		if (_descriptor < 0) {
-			throw std::runtime_error("failed to open");
+		ViewReader header(bytes);
+		const auto magic = header.Read<std::uint32_t>();
+		_version = header.Read<std::uint32_t>();
+		const auto foldersOffset = header.Read<std::uint32_t>();
+		_flags = header.Read<std::uint32_t>();
+		const auto folderCount = header.Read<std::uint32_t>();
+		const auto fileCount = header.Read<std::uint32_t>();
+		(void)header.Read<std::uint32_t>();  // total folder name length
+		(void)header.Read<std::uint32_t>();  // total file name length
+		(void)header.Read<std::uint32_t>();  // content flags
+		if (magic != kBsaMagic) {
+			throw std::runtime_error("not a BSA archive");
 		}
-		struct stat status{};
-		if (::fstat(_descriptor, &status) != 0 || status.st_size < 36) {
-			Close();
-			throw std::runtime_error("file too small");
+		if (_version != 103u && _version != 104u && _version != 105u) {
+			throw std::runtime_error("unsupported BSA version " + std::to_string(_version));
 		}
-		_viewSize = static_cast<std::uint64_t>(status.st_size);
-		void* view = ::mmap(nullptr, _viewSize, PROT_READ, MAP_PRIVATE, _descriptor, 0);
-		_view = view != MAP_FAILED ? static_cast<const std::uint8_t*>(view) : nullptr;
-		if (_view) {
-			::madvise(view, _viewSize, MADV_RANDOM);
-		}
-#endif
-		if (!_view) {
-			Close();
-			throw std::runtime_error("failed to map");
+		if ((_flags & kFlagDirectoryNames) == 0 || (_flags & kFlagFileNames) == 0) {
+			throw std::runtime_error("archive does not store folder/file names");
 		}
 
-		try {
-			ViewReader header(_view, _viewSize);
-			const auto magic = header.Read<std::uint32_t>();
-			_version = header.Read<std::uint32_t>();
-			const auto foldersOffset = header.Read<std::uint32_t>();
-			_flags = header.Read<std::uint32_t>();
-			const auto folderCount = header.Read<std::uint32_t>();
-			const auto fileCount = header.Read<std::uint32_t>();
-			(void)header.Read<std::uint32_t>();  // total folder name length
-			(void)header.Read<std::uint32_t>();  // total file name length
-			(void)header.Read<std::uint32_t>();  // content flags
-			if (magic != kBsaMagic) {
-				throw std::runtime_error("not a BSA archive");
-			}
-			if (_version != 103u && _version != 104u && _version != 105u) {
-				throw std::runtime_error("unsupported BSA version " + std::to_string(_version));
-			}
-			if ((_flags & kFlagDirectoryNames) == 0 || (_flags & kFlagFileNames) == 0) {
-				throw std::runtime_error("archive does not store folder/file names");
-			}
-
-			std::vector<std::uint32_t> folderFileCounts(folderCount);
-			ViewReader reader(_view, _viewSize, foldersOffset);
-			for (auto& count : folderFileCounts) {
+		// Folder records (hash, file count, offset; 105 widens the offset), then each folder's name
+		// and file records, then every file name in the same order.
+		std::vector<std::uint32_t> folderFileCounts(folderCount);
+		ViewReader reader(bytes, foldersOffset);
+		for (auto& count : folderFileCounts) {
+			(void)reader.Read<std::uint64_t>();
+			count = reader.Read<std::uint32_t>();
+			if (_version == 105u) {
+				(void)reader.Read<std::uint32_t>();
 				(void)reader.Read<std::uint64_t>();
-				count = reader.Read<std::uint32_t>();
-				if (_version == 105u) {
-					(void)reader.Read<std::uint32_t>();
-					(void)reader.Read<std::uint64_t>();
-				} else {
-					(void)reader.Read<std::uint32_t>();
-				}
+			} else {
+				(void)reader.Read<std::uint32_t>();
 			}
+		}
 
-			std::vector<std::string> folderNames(folderCount);
-			std::vector<Entry> records;
-			records.reserve(fileCount);
-			std::vector<std::uint32_t> recordFolders;
-			recordFolders.reserve(fileCount);
-			for (std::uint32_t folder = 0; folder < folderCount; ++folder) {
-				const auto nameLength = reader.Read<std::uint8_t>();
-				auto name = reader.ReadBytes(nameLength);
-				if (!name.empty() && name.back() == '\0') {
-					name.remove_suffix(1);
-				}
-				folderNames[folder] = std::string(name);
-				for (std::uint32_t i = 0; i < folderFileCounts[folder]; ++i) {
-					(void)reader.Read<std::uint64_t>();
-					Entry entry;
-					entry.size = reader.Read<std::uint32_t>();
-					entry.offset = reader.Read<std::uint32_t>();
-					records.push_back(entry);
-					recordFolders.push_back(folder);
-				}
+		std::vector<std::string> folderNames(folderCount);
+		std::vector<Entry> records;
+		records.reserve(fileCount);
+		std::vector<std::uint32_t> recordFolders;
+		recordFolders.reserve(fileCount);
+		for (std::uint32_t folder = 0; folder < folderCount; ++folder) {
+			const auto nameLength = reader.Read<std::uint8_t>();
+			auto name = reader.ReadBytes(nameLength);
+			if (!name.empty() && name.back() == '\0') {
+				name.remove_suffix(1);
 			}
-
-			_entries.reserve(records.size());
-			for (std::size_t i = 0; i < records.size(); ++i) {
-				const auto fileName = reader.ReadZString();
-				const auto& folderName = folderNames[recordFolders[i]];
-				auto fullName = folderName.empty() ? std::string(fileName) : folderName + "\\" + std::string(fileName);
-				auto canonical = CanonicalizeResourcePath(fullName);
-				if (!canonical.empty()) {
-					_entries.emplace_back(std::move(canonical), records[i]);
-				}
+			folderNames[folder] = std::string(name);
+			for (std::uint32_t i = 0; i < folderFileCounts[folder]; ++i) {
+				(void)reader.Read<std::uint64_t>();
+				Entry entry;
+				entry.size = reader.Read<std::uint32_t>();
+				entry.offset = reader.Read<std::uint32_t>();
+				records.push_back(entry);
+				recordFolders.push_back(folder);
 			}
-		} catch (...) {
-			Close();
-			throw;
 		}
-	}
 
-	BsaArchive::BsaArchive(BsaArchive&& a_other) noexcept
-	{
-		*this = std::move(a_other);
-	}
-
-	BsaArchive& BsaArchive::operator=(BsaArchive&& a_other) noexcept
-	{
-		if (this != std::addressof(a_other)) {
-			Close();
-			_path = std::move(a_other._path);
-			_file = std::exchange(a_other._file, nullptr);
-			_descriptor = std::exchange(a_other._descriptor, -1);
-			_mapping = std::exchange(a_other._mapping, nullptr);
-			_view = std::exchange(a_other._view, nullptr);
-			_viewSize = std::exchange(a_other._viewSize, 0);
-			_version = a_other._version;
-			_flags = a_other._flags;
-			_entries = std::move(a_other._entries);
+		_entries.reserve(records.size());
+		for (std::size_t i = 0; i < records.size(); ++i) {
+			const auto fileName = reader.ReadZString();
+			const auto& folderName = folderNames[recordFolders[i]];
+			auto canonical = CanonicalizeResourcePath(folderName.empty() ? std::string(fileName) : folderName + "\\" + std::string(fileName));
+			if (!canonical.empty()) {
+				_entries.emplace_back(std::move(canonical), records[i]);
+			}
 		}
-		return *this;
-	}
-
-	BsaArchive::~BsaArchive()
-	{
-		Close();
-	}
-
-	void BsaArchive::Close() noexcept
-	{
-#if defined(_WIN32)
-		if (_view) {
-			UnmapViewOfFile(_view);
-			_view = nullptr;
-		}
-		if (_mapping) {
-			CloseHandle(_mapping);
-			_mapping = nullptr;
-		}
-		if (_file) {
-			CloseHandle(_file);
-			_file = nullptr;
-		}
-#else
-		if (_view) {
-			::munmap(const_cast<std::uint8_t*>(_view), _viewSize);
-			_view = nullptr;
-		}
-		if (_descriptor >= 0) {
-			::close(_descriptor);
-			_descriptor = -1;
-		}
-#endif
 	}
 
 	std::vector<std::uint8_t> BsaArchive::Read(const Entry& a_entry) const
@@ -274,7 +194,7 @@ namespace FasterNGIO::Archives
 		auto size = a_entry.size & ~kSizeCompressionToggle;
 		const bool toggled = (a_entry.size & kSizeCompressionToggle) != 0;
 		const bool compressed = toggled != ((_flags & kFlagCompressedByDefault) != 0);
-		ViewReader reader(_view, _viewSize, a_entry.offset);
+		ViewReader reader(_file.Bytes(), a_entry.offset);
 		if ((_flags & kFlagEmbeddedNames) != 0 && _version != 103u) {
 			const auto nameLength = reader.Read<std::uint8_t>();
 			(void)reader.ReadBytes(nameLength);
@@ -322,27 +242,32 @@ namespace FasterNGIO::Archives
 	{
 		std::unordered_set<std::string> seen;
 		for (const auto& name : a_archiveOrder) {
-			if (!seen.insert(LowerAscii(name)).second) {
+			if (!seen.insert(Platform::LowerAscii(name)).second) {
 				continue;
 			}
-			const auto found = _data.Find(name);
-			if (!found) {
+			const auto path = _data.Find(name);
+			if (!path) {
 				continue;
 			}
-			const auto& path = *found;
 			try {
-				auto archive = std::make_unique<BsaArchive>(path);
+				auto archive = std::make_unique<BsaArchive>(*path);
 				const auto archiveIndex = static_cast<std::uint32_t>(_archives.size());
-				for (const auto& [identity, entry] : archive->Entries()) {
-					_index.insert_or_assign(identity, Location{ .archive = archiveIndex, .entry = entry });
+				const auto& entries = archive->Entries();
+				for (std::uint32_t i = 0; i < entries.size(); ++i) {
+					_index.insert_or_assign(entries[i].first, Location{ .archive = archiveIndex, .entry = i });
 				}
-				spdlog::info("archive {}: {} file(s)", name, archive->Entries().size());
+				spdlog::debug("archive {}: {} file(s)", name, entries.size());
 				_archives.push_back(std::move(archive));
 			} catch (const std::exception& e) {
-				spdlog::warn("skipped archive {}: {}", path.string(), e.what());
+				spdlog::warn("skipped archive {}: {}", path->string(), e.what());
 			}
 		}
+		spdlog::info("archives: {} loaded, {} file(s)", _archives.size(), _index.size());
 	}
+
+	ArchiveResolver::ArchiveResolver(ArchiveResolver&&) noexcept = default;
+	ArchiveResolver& ArchiveResolver::operator=(ArchiveResolver&&) noexcept = default;
+	ArchiveResolver::~ArchiveResolver() = default;
 
 	std::optional<std::vector<std::uint8_t>> ArchiveResolver::Read(std::string_view a_path) const
 	{
@@ -353,10 +278,8 @@ namespace FasterNGIO::Archives
 
 		// Loose files win, matched as the game matches them (case-insensitively, either separator).
 		if (const auto loosePath = _data.Find(canonical)) {
-			std::error_code ec;
-			std::ifstream input(*loosePath, std::ios::binary);
-			std::vector<std::uint8_t> bytes(static_cast<std::size_t>(std::filesystem::file_size(*loosePath, ec)));
-			if (!ec && input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
+			// An unreadable loose file falls through to the archives.
+			if (auto bytes = Platform::ReadWholeFile(*loosePath)) {
 				return bytes;
 			}
 		}
@@ -365,7 +288,8 @@ namespace FasterNGIO::Archives
 		if (it == _index.end()) {
 			return std::nullopt;
 		}
-		return _archives[it->second.archive]->Read(it->second.entry);
+		const auto& archive = *_archives[it->second.archive];
+		return archive.Read(archive.Entries()[it->second.entry].second);
 	}
 
 	std::vector<std::string> DefaultArchiveOrder(std::span<const GameData::LoadOrderEntry> a_loadOrder)

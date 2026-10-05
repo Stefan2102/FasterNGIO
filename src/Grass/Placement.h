@@ -1,15 +1,11 @@
 #pragma once
 
-#include "GameData/GameData.h"
-#include "Grass/NgioCacheWriter.h"
+#include "GameData/StaticWorld.h"
 
 #include <array>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string>
-#include <string_view>
-#include <unordered_map>
 #include <vector>
 
 namespace FasterNGIO::Grass
@@ -27,7 +23,8 @@ namespace FasterNGIO::Grass
 	// Smooth placement: each blade's acceptance comes from the texture weights at its own
 	// (optionally warped) position, interpolated bilinearly from vertices merged across quadrants
 	// and cells, instead of vanilla's on/off density per 512-unit patch. Vanilla's 512-unit patch
-	// grid, quadrant and cell seams and on/off steps all disappear (see AGENTS.md, Placement).
+	// grid, quadrant and cell seams and on/off steps all disappear (see AGENTS.md, "Smooth placement
+	// is seam-free and calibrated").
 	struct SmoothPlacementSettings
 	{
 		// Coverage ramps (smoothstep) from none at coverageLow texture weight to full at
@@ -46,8 +43,9 @@ namespace FasterNGIO::Grass
 		// 128-unit vertex grid that bilinear contours otherwise follow.
 		float warpAmplitude{ 96.0f };
 		float warpWavelength{ 512.0f };
-		// Cached weights for the cell and its neighbours. Without one, each cell's weights are built
-		// on the fly and its border vertices are not merged with the neighbouring cells'.
+		// Cached weights for the cell and its neighbours (see SmoothPlacement.h). Without one, each
+		// cell's weights are built on the fly and its border vertices are not merged with the
+		// neighbouring cells'.
 		const SmoothWeightField* field{ nullptr };
 	};
 
@@ -56,25 +54,17 @@ namespace FasterNGIO::Grass
 	{
 		PlacementMode mode{ PlacementMode::Vanilla };
 		SmoothPlacementSettings smooth;
+		// iMaxGrassTypesPerTexure: the engine takes one more than this per land texture.
 		std::uint32_t maxGrassTypesPerTexture{ 2 };
-		std::uint32_t grassInstanceStrideWords{ 16 };
 		std::uint32_t grassEvalSize{ 2 };
+		// iMinGrassSize: the closest lattice spacing, in game units.
 		std::uint32_t minGrassSize{ 20 };
+		// Half the side of the patch placed around each evaluated vertex.
 		std::uint32_t grassPatchSize{ grassEvalSize << 7 };
+		// fTexturePctThreshold.
 		float alphaThreshold{ 0.0f };
+		// Water height for cells that have none.
 		std::optional<float> waterHeight;
-	};
-
-	struct PlacementCounters
-	{
-		std::uint64_t samplesVisited{ 0 };
-		std::uint64_t samplesWithGrassParams{ 0 };
-		std::uint64_t grassParamsBuilt{ 0 };
-		std::uint64_t latticeCandidates{ 0 };
-		std::uint64_t densityRejected{ 0 };
-		std::uint64_t waterRejected{ 0 };
-		std::uint64_t slopeRejected{ 0 };
-		std::uint64_t bladesPlaced{ 0 };
 	};
 
 	// One output group (one GRAS) of a cell, in first-use order.
@@ -84,11 +74,14 @@ namespace FasterNGIO::Grass
 		std::string modelPath;
 	};
 
-	// A blade exactly as vanilla placement emits it. Rejection only removes blades; it never
+	// The 16-bit words of one blade in a .cgid, as the engine lays them out.
+	inline constexpr std::uint32_t kBladeWords = 16;
+
+	// A placed blade, encoded as the engine stores it. Rejection only removes blades; it never
 	// changes the words of the blades that survive.
 	struct BladeCandidate
 	{
-		std::array<std::uint16_t, 16> words{};
+		std::array<std::uint16_t, kBladeWords> words{};
 		float position[3]{};
 		std::uint32_t groupIndex{ 0 };
 	};
@@ -99,71 +92,10 @@ namespace FasterNGIO::Grass
 		std::int32_t cellY{ 0 };
 		std::vector<CellGrassGroup> groups;
 		std::vector<BladeCandidate> blades;
-		PlacementCounters counters;
 	};
 
-	// Per-LAND grass weight grids for smooth placement: for each grass type, the summed weight of
-	// the textures that carry it at every vertex, with shared quadrant-edge vertices averaged. Built
-	// once in parallel, then read without synchronisation by every worker.
-	class SmoothWeightField
-	{
-	public:
-		struct Grid
-		{
-			const GameData::GrassInfo* grass{ nullptr };
-			// Weight * 255 at each of the LAND's 33x33 vertices.
-			std::array<std::uint8_t, GameData::LandInfo::VertexCount> weights{};
-		};
-
-		// Builds grids for every LAND of the worldspace (the first LAND of a cell wins) and, with
-		// matchVanillaDensity, the per-type density scales. Both depend only on the worldspace, so a
-		// cell comes out the same however many cells a run places.
-		SmoothWeightField(const GameData::StaticWorldSnapshot& a_snapshot, std::span<const GameData::LandInfo> a_worldLands,
-			const PlacementSettings& a_settings);
-
-		// The grids of the LAND at a cell, or null when the worldspace has none there.
-		[[nodiscard]] const std::vector<Grid>* Find(std::int32_t a_cellX, std::int32_t a_cellY) const;
-		// The density multiplier of a grass type (1 unless matchVanillaDensity).
-		[[nodiscard]] float DensityScale(GameData::FormID a_grass) const;
-		[[nodiscard]] std::size_t CellCount() const { return _grids.size(); }
-		[[nodiscard]] std::size_t GridCount() const { return _gridCount; }
-		// Vanilla's and smooth's expected world-wide blade count per grass type (before water and
-		// slope filters), as used for the scales; empty unless matchVanillaDensity.
-		struct ExpectedBlades
-		{
-			double vanilla{ 0.0 };
-			double smooth{ 0.0 };
-		};
-		[[nodiscard]] const std::unordered_map<GameData::FormID, ExpectedBlades, GameData::FormIDHash>& Expected() const { return _expected; }
-
-	private:
-		std::unordered_map<std::uint64_t, std::vector<Grid>> _grids;
-		std::unordered_map<GameData::FormID, float, GameData::FormIDHash> _densityScale;
-		std::unordered_map<GameData::FormID, ExpectedBlades, GameData::FormIDHash> _expected;
-		std::size_t _gridCount{ 0 };
-	};
-
-	// One LAND's smooth-placement grids, sorted by grass form ID.
-	[[nodiscard]] std::vector<SmoothWeightField::Grid> BuildSmoothWeightGrids(
-		const GameData::StaticWorldSnapshot& a_snapshot,
-		const GameData::LandInfo& a_land,
-		const PlacementSettings& a_settings);
-
-	// Runs the engine's grass placement for one exterior LAND, accepting every blade that passes
-	// the density, water and slope tests, in the engine's RNG order.
-	[[nodiscard]] CellCandidates GenerateCellCandidates(
-		const GameData::StaticWorldSnapshot& a_snapshot,
-		const GameData::LandInfo& a_land,
-		const PlacementSettings& a_settings);
-
-	// Builds the .cgid payload from the blades that survive. a_rejected is one bit per blade
-	// (bit i of word i / 32); an empty span keeps every blade.
-	[[nodiscard]] NgioCellCache FinalizeCell(
-		const CellCandidates& a_candidates,
-		std::span<const std::uint32_t> a_rejected,
-		std::uint32_t a_strideWords);
-
-	[[nodiscard]] std::string MakeNgioCacheFileName(std::string_view a_worldEditorID, std::int32_t a_cellX, std::int32_t a_cellY);
-	[[nodiscard]] std::string ResolveWorldEditorID(const GameData::StaticWorldSnapshot& a_snapshot, GameData::FormID a_worldFormID);
-	[[nodiscard]] bool ExistingNgioCacheLooksValid(const std::filesystem::path& a_path);
+	// Places grass on one exterior LAND, keeping every blade that passes the density, water and
+	// slope tests: vanilla in the engine's RNG order, or smooth. Empty for a LAND without a cell or
+	// heights.
+	[[nodiscard]] CellCandidates GenerateCellCandidates(const GameData::StaticWorldSnapshot& a_snapshot, const GameData::LandInfo& a_land, const PlacementSettings& a_settings);
 }

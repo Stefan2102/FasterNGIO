@@ -1,5 +1,7 @@
 #include "Rejection/CpuBvh.h"
 
+#include "Grass/Placement.h"
+#include "Rejection/Bounds.h"
 #include "Rejection/PrimitiveTests.h"
 
 #include <oneapi/tbb/parallel_for.h>
@@ -16,51 +18,15 @@ namespace FasterNGIO::Rejection
 	{
 		constexpr std::uint32_t kKindShift = 30;
 		constexpr std::uint32_t kIndexMask = (1u << kKindShift) - 1;
-		constexpr std::uint32_t kKindTriangle = 0;
-		constexpr std::uint32_t kKindHull = 1;
-		constexpr std::uint32_t kKindCapsule = 2;
 		constexpr std::uint32_t kBins = 16;
 		constexpr std::uint32_t kStackDepth = 64;
-
-		struct Box
-		{
-			float min[3]{ (std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)() };
-			float max[3]{ -(std::numeric_limits<float>::max)(), -(std::numeric_limits<float>::max)(), -(std::numeric_limits<float>::max)() };
-
-			void Grow(const Float3& a_point, float a_reach)
-			{
-				const float point[3]{ a_point.x, a_point.y, a_point.z };
-				for (int axis = 0; axis < 3; ++axis) {
-					min[axis] = (std::min)(min[axis], point[axis] - a_reach);
-					max[axis] = (std::max)(max[axis], point[axis] + a_reach);
-				}
-			}
-
-			void Grow(const Box& a_box)
-			{
-				for (int axis = 0; axis < 3; ++axis) {
-					min[axis] = (std::min)(min[axis], a_box.min[axis]);
-					max[axis] = (std::max)(max[axis], a_box.max[axis]);
-				}
-			}
-
-			[[nodiscard]] float HalfArea() const
-			{
-				const float x = max[0] - min[0];
-				const float y = max[1] - min[1];
-				const float z = max[2] - min[2];
-				return x * y + y * z + z * x;
-			}
-
-			[[nodiscard]] float Centroid(int a_axis) const { return 0.5f * (min[a_axis] + max[a_axis]); }
-		};
 
 		// Binned-SAH builder over primitive boxes. Children of an interior node are allocated as a
 		// pair so traversal needs one index per node.
 		class Builder
 		{
 		public:
-			Builder(std::span<const Box> a_boxes, std::uint32_t a_maxLeaf, std::vector<BvhNode>& a_nodes, std::vector<std::uint32_t>& a_order) :
+			Builder(std::span<const Bounds> a_boxes, std::uint32_t a_maxLeaf, std::vector<BvhNode>& a_nodes, std::vector<std::uint32_t>& a_order) :
 				_boxes(a_boxes), _maxLeaf(a_maxLeaf), _nodes(a_nodes), _order(a_order)
 			{
 				_order.resize(a_boxes.size());
@@ -74,7 +40,7 @@ namespace FasterNGIO::Rejection
 			}
 
 		private:
-			void SetBounds(BvhNode& a_node, const Box& a_box)
+			void SetBounds(BvhNode& a_node, const Bounds& a_box)
 			{
 				for (int axis = 0; axis < 3; ++axis) {
 					a_node.min[axis] = a_box.min[axis];
@@ -84,8 +50,8 @@ namespace FasterNGIO::Rejection
 
 			void Build(std::uint32_t a_node, std::uint32_t a_first, std::uint32_t a_count)
 			{
-				Box bounds;
-				Box centroids;
+				Bounds bounds;
+				Bounds centroids;
 				for (std::uint32_t i = a_first; i < a_first + a_count; ++i) {
 					const auto& box = _boxes[_order[i]];
 					bounds.Grow(box);
@@ -108,7 +74,7 @@ namespace FasterNGIO::Rejection
 					if (extent <= 0.0f) {
 						continue;
 					}
-					std::array<Box, kBins> binBoxes{};
+					std::array<Bounds, kBins> binBoxes{};
 					std::array<std::uint32_t, kBins> binCounts{};
 					const float scale = kBins / extent;
 					for (std::uint32_t i = a_first; i < a_first + a_count; ++i) {
@@ -118,14 +84,14 @@ namespace FasterNGIO::Rejection
 						++binCounts[bin];
 					}
 					std::array<float, kBins - 1> leftCost{};
-					Box left;
+					Bounds left;
 					std::uint32_t leftCount = 0;
 					for (std::uint32_t b = 0; b + 1 < kBins; ++b) {
 						left.Grow(binBoxes[b]);
 						leftCount += binCounts[b];
 						leftCost[b] = leftCount ? left.HalfArea() * static_cast<float>(leftCount) : 0.0f;
 					}
-					Box right;
+					Bounds right;
 					std::uint32_t rightCount = 0;
 					for (std::uint32_t b = kBins - 1; b > 0; --b) {
 						right.Grow(binBoxes[b]);
@@ -165,7 +131,7 @@ namespace FasterNGIO::Rejection
 				Build(left + 1, split, a_first + a_count - split);
 			}
 
-			std::span<const Box> _boxes;
+			std::span<const Bounds> _boxes;
 			std::uint32_t _maxLeaf;
 			std::vector<BvhNode>& _nodes;
 			std::vector<std::uint32_t>& _order;
@@ -248,30 +214,15 @@ namespace FasterNGIO::Rejection
 				return;
 			}
 			const auto& model = models[m].collision;
-			std::vector<Box> boxes;
+			std::vector<Bounds> boxes;
 			std::vector<std::uint32_t> references;
 			boxes.reserve(model.triangles.size() + model.hulls.size() + model.capsules.size());
-			for (std::uint32_t i = 0; i < model.triangles.size(); ++i) {
-				Box box;
-				for (const auto& v : model.triangles[i].vertices) {
-					box.Grow(v, model.triangles[i].radius);
+			for (std::uint32_t kind = 0; kind < kPrimitiveKindCount; ++kind) {
+				const auto primitiveKind = static_cast<PrimitiveKind>(kind);
+				for (std::uint32_t i = 0; i < PrimitiveCount(model, primitiveKind); ++i) {
+					boxes.push_back(PrimitiveBounds(model, primitiveKind, i));
+					references.push_back((kind << kKindShift) | i);
 				}
-				boxes.push_back(box);
-				references.push_back((kKindTriangle << kKindShift) | i);
-			}
-			for (std::uint32_t i = 0; i < model.hulls.size(); ++i) {
-				Box box;
-				box.Grow(model.hulls[i].aabbMin, model.hulls[i].radius);
-				box.Grow(model.hulls[i].aabbMax, model.hulls[i].radius);
-				boxes.push_back(box);
-				references.push_back((kKindHull << kKindShift) | i);
-			}
-			for (std::uint32_t i = 0; i < model.capsules.size(); ++i) {
-				Box box;
-				box.Grow(model.capsules[i].p0, model.capsules[i].radius);
-				box.Grow(model.capsules[i].p1, model.capsules[i].radius);
-				boxes.push_back(box);
-				references.push_back((kKindCapsule << kKindShift) | i);
 			}
 			if (boxes.empty()) {
 				return;
@@ -285,7 +236,7 @@ namespace FasterNGIO::Rejection
 			}
 		});
 
-		std::vector<Box> instanceBoxes(instances.size());
+		std::vector<Bounds> instanceBoxes(instances.size());
 		for (std::size_t i = 0; i < instances.size(); ++i) {
 			instanceBoxes[i].Grow(instances[i].aabbMin, 0.0f);
 			instanceBoxes[i].Grow(instances[i].aabbMax, 0.0f);
@@ -315,18 +266,18 @@ namespace FasterNGIO::Rejection
 			for (auto i = a_first; i < a_first + a_count; ++i) {
 				const auto reference = bvh.primitives[i];
 				const auto index = reference & kIndexMask;
-				switch (reference >> kKindShift) {
-				case kKindTriangle:
+				switch (static_cast<PrimitiveKind>(reference >> kKindShift)) {
+				case PrimitiveKind::Triangle:
 					if (CapsuleOverlapsTriangle(model.triangles[index], p, q, r)) {
 						return true;
 					}
 					break;
-				case kKindHull:
+				case PrimitiveKind::Hull:
 					if (CapsuleOverlapsHull(model, model.hulls[index], p, q, r)) {
 						return true;
 					}
 					break;
-				default:
+				case PrimitiveKind::Capsule:
 					if (CapsuleOverlapsCapsule(model.capsules[index], p, q, r)) {
 						return true;
 					}
@@ -356,14 +307,7 @@ namespace FasterNGIO::Rejection
 		for (std::size_t i = 0; i < a_cell.blades.size(); ++i) {
 			const auto& blade = a_cell.blades[i];
 			const auto& shape = a_shapes[blade.groupIndex];
-			if (!shape.test) {
-				continue;
-			}
-			if (shape.halfExtentX > 0.0f || shape.halfExtentY > 0.0f) {
-				throw std::runtime_error("box queries (Ray-cast-mode 2) are not implemented");
-			}
-			const Float3 p{ blade.position[0], blade.position[1], blade.position[2] - shape.depth };
-			const Float3 q{ blade.position[0], blade.position[1], blade.position[2] + shape.height };
+			const auto [p, q] = BladeSegment(shape, blade.position);
 			if (CapsuleHitsWorld(p, q, shape.radius)) {
 				rejected[i / 32] |= 1u << (i % 32);
 			}

@@ -26,7 +26,7 @@ namespace FasterNGIO::Rejection
 
 namespace FasterNGIO::Pipeline
 {
-	class CacheWriter;
+	class FileWriterPool;
 	struct WriteTally;
 }
 
@@ -56,16 +56,13 @@ namespace FasterNGIO::Pipeline
 		Gpu::GpuRejector* gpu{ nullptr };
 		// Re-test every cell with the brute-force CPU reference and count disagreements.
 		bool validateCpu{ false };
-		// Cells whose candidates may wait for the GPU at once. Producers past the limit suspend
-		// in the graph until a cell is written; nothing blocks.
-		std::uint32_t maxCellsAwaitingGpu{ 4096 };
 		// Counts cells as they finish (written, skipped, failed or cancelled), for a progress display.
 		std::atomic<std::uint32_t>* progress{ nullptr };
 		// Cells not yet started when a stop is requested are cancelled instead of placed.
 		std::stop_token stop;
 		// Finished files go to these writer threads (counted in writeTally) instead of being written by
 		// the worker; producers suspend while its backlog is over budget. Null: written inline.
-		CacheWriter* writer{ nullptr };
+		FileWriterPool* writer{ nullptr };
 		std::shared_ptr<WriteTally> writeTally;
 	};
 

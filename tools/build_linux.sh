@@ -14,6 +14,7 @@
 #   VULKAN_HEADERS_DIR          Vulkan-Headers include directory with VK_EXT_descriptor_heap
 #                               (Vulkan SDK 1.4.357 or the matching Vulkan-Headers tag). GPU only.
 #                               Default: setup_linux.sh's.
+#   VULKAN_HEADERS_TAG          The Vulkan-Headers tag setup_linux.sh fetches (tools/linux_common.sh).
 #   FASTERNGIO_DEPS_DIR         Where setup_linux.sh puts vcpkg and Vulkan-Headers. Default
 #                               ~/.local/share/fasterngio.
 #   FASTERNGIO_DXC_EXECUTABLE   dxc for the build-time SPIR-V compile. Default: vcpkg's, which needs
@@ -42,13 +43,11 @@ done
 source_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ $variant == gpu ]]; then
 	suffix=
-	gpu=ON
-	features=gpu
 else
 	suffix=-cpu
-	gpu=OFF
-	features=
 fi
+# The configure preset (CMakePresets.json): linux or linux-cpu.
+preset=linux$suffix
 # Sourced after the variant is known: it may use $variant and $suffix.
 if [[ -f "$source_dir/build-linux.env" ]]; then
 	# shellcheck source=/dev/null
@@ -59,10 +58,9 @@ if [[ -z ${FASTERNGIO_BUILD_DIR:-} && $source_dir == /mnt/* ]] && grep -qi micro
 fi
 build_dir=${FASTERNGIO_BUILD_DIR:-$source_dir/build/linux$suffix}
 release_dir=${FASTERNGIO_RELEASE_DIR:-$source_dir/release/FasterNGIO-linux$suffix}
-deps_dir=${FASTERNGIO_DEPS_DIR:-$HOME/.local/share/fasterngio}
+# shellcheck source=linux_common.sh
+source "$source_dir/tools/linux_common.sh"
 export FASTERNGIO_DEPS_DIR=$deps_dir
-
-fail() { echo "error: $*" >&2; exit 1; }
 
 setup=$source_dir/tools/setup_linux.sh
 # Installs only what is missing (through sudo); a no-op once everything is there.
@@ -77,20 +75,16 @@ if [[ -z ${VCPKG_ROOT:-} ]]; then
 	[[ -x $VCPKG_ROOT/vcpkg ]] || bash "$setup" deps
 fi
 if [[ $variant == gpu && -z ${VULKAN_HEADERS_DIR:-} ]]; then
-	tag=${VULKAN_HEADERS_TAG:-v1.4.357}
-	VULKAN_HEADERS_DIR=$deps_dir/Vulkan-Headers-$tag/include
+	VULKAN_HEADERS_DIR=$vulkan_headers_dir/include
 	[[ -d $VULKAN_HEADERS_DIR/vulkan ]] || bash "$setup" deps
 fi
 [[ -f "$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" ]] || fail "set VCPKG_ROOT to a vcpkg checkout"
+# The preset finds the toolchain through it.
+export VCPKG_ROOT
 
-configure=(
-	-S "$source_dir" -B "$build_dir" -G Ninja
-	-DCMAKE_BUILD_TYPE=RelWithDebInfo
-	"-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-	-DVCPKG_TARGET_TRIPLET=x64-linux
-	"-DVCPKG_MANIFEST_FEATURES=$features"
-	"-DFASTERNGIO_ENABLE_GPU=$gpu"
-)
+# The preset has the generator, build type, triplet and GPU options; only the directory and the
+# machine's paths are added here.
+configure=(-S "$source_dir" --preset "$preset" -B "$build_dir")
 if [[ $variant == gpu ]]; then
 	[[ -d "$VULKAN_HEADERS_DIR/vulkan" ]] ||
 		fail "set VULKAN_HEADERS_DIR to a Vulkan-Headers include directory with VK_EXT_descriptor_heap"

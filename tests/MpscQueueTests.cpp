@@ -1,4 +1,4 @@
-#include "Pipeline/MpscQueue.h"
+#include "Concurrency/MpscQueue.h"
 
 #include <gtest/gtest.h>
 
@@ -10,7 +10,7 @@ TEST(MpscQueue, DeliversEveryItemFromManyProducersExactlyOnce)
 {
 	constexpr int kProducers = 8;
 	constexpr int kPerProducer = 20000;
-	FasterNGIO::Pipeline::MpscQueue<int> queue;
+	FasterNGIO::Concurrency::MpscQueue<int> queue;
 	std::vector<std::thread> producers;
 	for (int p = 0; p < kProducers; ++p) {
 		producers.emplace_back([&, p] {

@@ -1,6 +1,7 @@
 #include "Platform/WholeFile.h"
 
 #include <algorithm>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -57,5 +58,23 @@ namespace FasterNGIO::Platform
 			throw std::runtime_error("cannot write " + a_path.string() + ": " + std::strerror(errno));
 		}
 #endif
+	}
+
+	std::optional<std::vector<std::uint8_t>> ReadWholeFile(const std::filesystem::path& a_path)
+	{
+		std::ifstream file(a_path, std::ios::binary | std::ios::ate);
+		if (!file) {
+			return std::nullopt;
+		}
+		const auto size = file.tellg();
+		if (size < 0) {
+			return std::nullopt;
+		}
+		std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+		file.seekg(0);
+		if (!file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
+			return std::nullopt;
+		}
+		return bytes;
 	}
 }

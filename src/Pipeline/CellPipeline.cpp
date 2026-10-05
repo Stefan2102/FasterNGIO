@@ -1,7 +1,9 @@
 #include "Pipeline/CellPipeline.h"
 
-#include "Grass/NgioCacheWriter.h"
-#include "Pipeline/CacheWriter.h"
+#include "Concurrency/AtomicWait.h"
+#include "Grass/CellCache.h"
+#include "Pipeline/FileWriterPool.h"
+#include "Pipeline/SuspensionWaiters.h"
 #include "Pipeline/TbbGraphScheduler.h"
 #include "Platform/WholeFile.h"
 #include "Rejection/CpuBvh.h"
@@ -11,14 +13,14 @@
 #endif
 
 #include <ORGModuleServices/Async/StateGraph.h>
-#include <ORGModuleServices/Async/SuspensionIdentity.h>
-#include <oneapi/tbb/concurrent_queue.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <atomic>
 #include <bit>
 #include <exception>
+#include <functional>
+#include <stdexcept>
 
 namespace FasterNGIO::Pipeline
 {
@@ -50,7 +52,6 @@ namespace FasterNGIO::Pipeline
 			std::vector<Rejection::QueryShape> shapes;
 			std::vector<std::uint32_t> rejected;
 #if FASTERNGIO_HAS_GPU
-			std::vector<std::uint32_t> queryBlades;
 			std::shared_ptr<Gpu::TraceJob> job;
 #endif
 		};
@@ -63,6 +64,10 @@ namespace FasterNGIO::Pipeline
 		struct CellDone
 		{
 		};
+
+		// Cells whose candidates may wait for the GPU at once. Producers past the limit suspend in the
+		// graph until a cell is written; nothing blocks.
+		constexpr std::uint32_t kMaxCellsAwaitingGpu = 4096;
 
 		// Admission for cells waiting on the GPU. TryAcquire never blocks; a producer that misses
 		// registers a waiter and suspends in the graph, and Release wakes exactly one live waiter.
@@ -89,39 +94,19 @@ namespace FasterNGIO::Pipeline
 				if (TryAcquire()) {
 					return 0;
 				}
-				auto waiter = std::make_shared<Waiter>();
-				waiter->identity = org::async::AllocateArtifactSuspensionIdentity();
-				_waiters.push(waiter);
-				// A release may have happened before the waiter was visible.
-				if (TryAcquire()) {
-					waiter->active.store(false, std::memory_order_release);
-					return 0;
-				}
-				return waiter->identity;
+				return _waiters.Wait(_notify, [this] { return TryAcquire(); });
 			}
 
 			void Release()
 			{
 				_available.fetch_add(1, std::memory_order_acq_rel);
-				std::shared_ptr<Waiter> waiter;
-				while (_waiters.try_pop(waiter)) {
-					if (waiter->active.exchange(false, std::memory_order_acq_rel)) {
-						_notify(waiter->identity);
-						return;
-					}
-				}
+				_waiters.WakeOne();
 			}
 
 		private:
-			struct Waiter
-			{
-				std::uint64_t identity{ 0 };
-				std::atomic<bool> active{ true };
-			};
-
 			std::atomic<std::int64_t> _available;
-			oneapi::tbb::concurrent_queue<std::shared_ptr<Waiter>> _waiters;
-			std::function<void(std::uint64_t)> _notify;
+			SuspensionWaiters::Notify _notify;
+			SuspensionWaiters _waiters;
 		};
 
 		[[nodiscard]] std::uint64_t CountBits(const std::vector<std::uint32_t>& a_bits)
@@ -133,13 +118,13 @@ namespace FasterNGIO::Pipeline
 			return count;
 		}
 
-		class Pipeline
+		class CellPipelineRun
 		{
 		public:
-			explicit Pipeline(const CellPipelineDesc& a_desc) :
+			explicit CellPipelineRun(const CellPipelineDesc& a_desc) :
 				_desc(a_desc),
 				_graph(MakeTbbGraphScheduler(), "FasterNGIO", MakeHooks()),
-				_capacity(a_desc.maxCellsAwaitingGpu, _graph.MakeSuspensionNotifier()),
+				_capacity(kMaxCellsAwaitingGpu, _graph.MakeSuspensionNotifier()),
 				_writeNotify(_graph.MakeSuspensionNotifier())
 			{
 				_graph.RegisterTypedProducer<CellInput, CellTraceArtifact>(kCellTrace, 0, 0, "FasterNGIO::CellTrace",
@@ -148,7 +133,7 @@ namespace FasterNGIO::Pipeline
 					[this](const BuildContext& a_context, std::shared_ptr<const CellInput> a_input) { return BuildOutput(a_context, *a_input); });
 			}
 
-			~Pipeline() { _graph.Shutdown(); }
+			~CellPipelineRun() { _graph.Shutdown(); }
 
 			CellPipelineStats Run()
 			{
@@ -172,9 +157,7 @@ namespace FasterNGIO::Pipeline
 				}
 
 				// Sleep (futex) until every CellOutput has run; producers count themselves done.
-				for (auto finished = _finished.load(std::memory_order_acquire); finished < cellCount; finished = _finished.load(std::memory_order_acquire)) {
-					_finished.wait(finished, std::memory_order_acquire);
-				}
+				Concurrency::WaitUntil(_finished, [cellCount](auto a_finished) { return a_finished >= cellCount; });
 
 				CellPipelineStats stats;
 				stats.cellsWritten = _written.load();
@@ -273,19 +256,7 @@ namespace FasterNGIO::Pipeline
 #if FASTERNGIO_HAS_GPU
 			BuildResult PostToGpu(std::shared_ptr<CellWork> a_work)
 			{
-				// Only blades whose grass type is tested become queries; the rest are kept.
-				std::vector<Gpu::Query> queries;
-				queries.reserve(a_work->candidates.blades.size());
-				a_work->queryBlades.reserve(a_work->candidates.blades.size());
-				for (std::uint32_t b = 0; b < a_work->candidates.blades.size(); ++b) {
-					const auto& blade = a_work->candidates.blades[b];
-					const auto& shape = a_work->shapes[blade.groupIndex];
-					if (!shape.test) {
-						continue;
-					}
-					queries.push_back(Gpu::Query{ blade.position[0], blade.position[1], blade.position[2] - shape.depth, (std::max)(shape.radius, 1.0e-3f) });
-					a_work->queryBlades.push_back(b);
-				}
+				auto queries = Gpu::MakeQueries(a_work->candidates.blades, a_work->shapes);
 				if (queries.empty()) {
 					return Ready(std::move(a_work));
 				}
@@ -353,9 +324,9 @@ namespace FasterNGIO::Pipeline
 						}
 						const auto hits = work.job->Hits();
 						work.rejected.assign((work.candidates.blades.size() + 31) / 32, 0u);
-						for (std::size_t q = 0; q < hits.size(); ++q) {
-							if (hits[q] != 0) {
-								work.rejected[work.queryBlades[q] / 32] |= 1u << (work.queryBlades[q] % 32);
+						for (std::size_t b = 0; b < hits.size(); ++b) {
+							if (hits[b] != 0) {
+								work.rejected[b / 32] |= 1u << (b % 32);
 							}
 						}
 						if (_desc.validateCpu) {
@@ -368,7 +339,7 @@ namespace FasterNGIO::Pipeline
 					}
 					_rejected.fetch_add(CountBits(work.rejected));
 					_blades.fetch_add(work.candidates.blades.size());
-					auto bytes = Grass::SerializeNgioCellCache(Grass::FinalizeCell(work.candidates, work.rejected, _desc.placement.grassInstanceStrideWords));
+					auto bytes = Grass::SerializeNgioCellCache(Grass::FinalizeCell(work.candidates, work.rejected));
 					if (_desc.writer) {
 						_desc.writer->Submit(CellPath(a_input.cell), std::move(bytes), _desc.writeTally);
 					} else {
@@ -396,12 +367,9 @@ namespace FasterNGIO::Pipeline
 						const auto bit = static_cast<std::uint32_t>(std::countr_zero(diff));
 						const auto& blade = a_work.candidates.blades[w * 32 + bit];
 						const auto& shape = a_work.shapes[blade.groupIndex];
-						const Float3 p{ blade.position[0], blade.position[1], blade.position[2] - shape.depth };
-						const Float3 q{ blade.position[0], blade.position[1], blade.position[2] + shape.height };
-						std::ptrdiff_t query = -1;
-#if FASTERNGIO_HAS_GPU
-						query = std::ranges::find(a_work.queryBlades, static_cast<std::uint32_t>(w * 32 + bit)) - a_work.queryBlades.begin();
-#endif
+						const auto [p, q] = Rejection::BladeSegment(shape, blade.position);
+						// Queries are in blade order.
+						const auto query = w * 32 + bit;
 						spdlog::warn("mismatch cell ({}, {}) query {} blade at ({:.1f}, {:.1f}, {:.1f}) r={:.2f}: reference={} {}={} {}",
 							a_work.candidates.cellX,
 							a_work.candidates.cellY,
@@ -435,7 +403,7 @@ namespace FasterNGIO::Pipeline
 
 	CellPipelineStats RunCellPipeline(const CellPipelineDesc& a_desc)
 	{
-		Pipeline pipeline(a_desc);
+		CellPipelineRun pipeline(a_desc);
 		return pipeline.Run();
 	}
 }

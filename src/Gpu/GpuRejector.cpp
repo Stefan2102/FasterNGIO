@@ -1,11 +1,14 @@
 #include "Gpu/GpuRejector.h"
 
-#include "Pipeline/MpscQueue.h"
+#include "Concurrency/MpscQueue.h"
+#include "Gpu/GpuShaders.h"
+#include "Gpu/ModelPacking.h"
+#include "Grass/Placement.h"
+#include "Rejection/Bounds.h"
+#include "Rejection/HlslShim.h"
+#include "Rejection/WorldIndex.h"
 
 #include <OpenRenderGraph/PersistentGraphHost.h>
-#if FASTERNGIO_RUNTIME_SHADER_COMPILER
-#include <ORGModuleServices/ShaderCompiler.h>
-#endif
 #include <Render/Runtime/RuntimeDevice.h>
 #include <Render/Runtime/ThreadPoolTaskService.h>
 #include <RenderPasses/Base/TypedRenderGraphPass.h>
@@ -23,7 +26,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <fstream>
 #include <future>
 #include <variant>
 #include <iterator>
@@ -39,22 +41,19 @@ namespace FasterNGIO::Gpu
 		using Collision::CollisionModel;
 		using Collision::Float3;
 
-		// Primitive kinds, in BLAS geometry order. Each has its own procedural hit group.
-		enum Kind : std::uint32_t
-		{
-			KindTriangles = 0,
-			KindHulls = 1,
-			KindCapsules = 2,
-			KindCount = 3
-		};
+		using Rejection::Bounds;
+		using Rejection::kPrimitiveKindCount;
+		using Rejection::PrimitiveKind;
+		namespace Layout = Rejection::Hlsl;
 
 		constexpr std::uint64_t kAccelerationStructureAlignment = 256;  // D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT
 		constexpr std::uint64_t kBlasScratchBudget = 512ull << 20;
 		// One raw SRV per collision model plus a few per frame set. D3D12 caps a shader-visible heap at
 		// 1,000,000 descriptors; a Vulkan descriptor heap is a buffer, so stay well inside both.
 		constexpr std::uint32_t kDescriptorCapacity = 1u << 17;
-		constexpr std::uint32_t kRootConstantCount = 7;
-		constexpr std::uint64_t kDebugBytes = 16 + 255 * 96;
+		// Queries traced in one DispatchRays, before the device's own limit.
+		constexpr std::uint32_t kMaxQueriesPerFrame = 1u << 22;
+		constexpr std::uint32_t kRootConstantCount = sizeof(Layout::RootConstants) / sizeof(std::uint32_t);
 
 		[[nodiscard]] std::uint64_t AlignUp(std::uint64_t a_value, std::uint64_t a_alignment)
 		{
@@ -68,179 +67,7 @@ namespace FasterNGIO::Gpu
 			}
 		}
 
-		// ---- Model packing ------------------------------------------------------------------
-
-		struct Aabb
-		{
-			float min[3];
-			float max[3];
-		};
-		static_assert(sizeof(Aabb) == 24);
-
-		struct PackedModel
-		{
-			std::vector<std::byte> bytes;
-			struct Geometry
-			{
-				Kind kind;
-				std::uint64_t aabbOffset;
-				std::uint32_t count;
-			};
-			std::vector<Geometry> geometries;
-			std::uint32_t kindMask{ 0 };
-		};
-
-		class Writer
-		{
-		public:
-			explicit Writer(std::vector<std::byte>& a_bytes) :
-				_bytes(a_bytes) {}
-
-			[[nodiscard]] std::uint64_t Offset() const { return _bytes.size(); }
-			void Align(std::uint64_t a_alignment) { _bytes.resize(AlignUp(_bytes.size(), a_alignment)); }
-
-			template <class T>
-			void Put(const T& a_value)
-			{
-				const auto offset = _bytes.size();
-				_bytes.resize(offset + sizeof(T));
-				std::memcpy(_bytes.data() + offset, &a_value, sizeof(T));
-			}
-
-			void PutPoint(const Float3& a_point)
-			{
-				Put(a_point.x);
-				Put(a_point.y);
-				Put(a_point.z);
-			}
-
-			template <class T>
-			void PutAt(std::uint64_t a_offset, const T& a_value)
-			{
-				std::memcpy(_bytes.data() + a_offset, &a_value, sizeof(T));
-			}
-
-		private:
-			std::vector<std::byte>& _bytes;
-		};
-
-		void Grow(Aabb& a_box, const Float3& a_point, float a_reach)
-		{
-			a_box.min[0] = (std::min)(a_box.min[0], a_point.x - a_reach);
-			a_box.min[1] = (std::min)(a_box.min[1], a_point.y - a_reach);
-			a_box.min[2] = (std::min)(a_box.min[2], a_point.z - a_reach);
-			a_box.max[0] = (std::max)(a_box.max[0], a_point.x + a_reach);
-			a_box.max[1] = (std::max)(a_box.max[1], a_point.y + a_reach);
-			a_box.max[2] = (std::max)(a_box.max[2], a_point.z + a_reach);
-		}
-
-		[[nodiscard]] Aabb EmptyBox()
-		{
-			constexpr auto inf = (std::numeric_limits<float>::max)();
-			return { { inf, inf, inf }, { -inf, -inf, -inf } };
-		}
-
-		// Lays one model out as GrassRejection.hlsl expects, followed by the BLAS AABBs (each
-		// primitive's bounds grown by its own radius plus the query inflation).
-		[[nodiscard]] PackedModel PackModel(const CollisionModel& a_model, float a_inflation)
-		{
-			PackedModel packed;
-			Writer out(packed.bytes);
-			for (int i = 0; i < 8; ++i) {
-				out.Put(std::uint32_t{ 0 });
-			}
-
-			const auto trianglesOffset = out.Offset();
-			for (const auto& tri : a_model.triangles) {
-				for (const auto& v : tri.vertices) {
-					out.PutPoint(v);
-				}
-				out.Put(tri.radius);
-			}
-
-			const auto hullsOffset = out.Offset();
-			const auto hullRecords = out.Offset();
-			for (std::size_t i = 0; i < a_model.hulls.size(); ++i) {
-				for (int w = 0; w < 8; ++w) {
-					out.Put(std::uint32_t{ 0 });
-				}
-			}
-			for (std::size_t i = 0; i < a_model.hulls.size(); ++i) {
-				const auto& hull = a_model.hulls[i];
-				out.Align(16);
-				const auto planeOffset = out.Offset();
-				for (std::uint32_t p = 0; p < hull.planeCount; ++p) {
-					const auto& plane = a_model.hullPlanes[hull.firstPlane + p];
-					out.Put(plane.x);
-					out.Put(plane.y);
-					out.Put(plane.z);
-					out.Put(plane.w);
-				}
-				const auto triangleOffset = out.Offset();
-				for (std::uint32_t t = 0; t < hull.triangleCount; ++t) {
-					for (const auto& v : a_model.hullTriangles[hull.firstTriangle + t].vertices) {
-						out.PutPoint(v);
-					}
-				}
-				const auto record = hullRecords + i * 32;
-				out.PutAt(record + 0, static_cast<std::uint32_t>(planeOffset));
-				out.PutAt(record + 4, hull.planeCount);
-				out.PutAt(record + 8, static_cast<std::uint32_t>(triangleOffset));
-				out.PutAt(record + 12, hull.triangleCount);
-				out.PutAt(record + 16, hull.radius);
-			}
-
-			out.Align(16);
-			const auto capsulesOffset = out.Offset();
-			for (const auto& capsule : a_model.capsules) {
-				out.PutPoint(capsule.p0);
-				out.PutPoint(capsule.p1);
-				out.Put(capsule.radius);
-				out.Put(0.0f);
-			}
-
-			out.PutAt(0, static_cast<std::uint32_t>(trianglesOffset));
-			out.PutAt(4, static_cast<std::uint32_t>(a_model.triangles.size()));
-			out.PutAt(8, static_cast<std::uint32_t>(hullsOffset));
-			out.PutAt(12, static_cast<std::uint32_t>(a_model.hulls.size()));
-			out.PutAt(16, static_cast<std::uint32_t>(capsulesOffset));
-			out.PutAt(20, static_cast<std::uint32_t>(a_model.capsules.size()));
-
-			const auto beginGeometry = [&](Kind a_kind, std::size_t a_count) {
-				out.Align(16);
-				packed.geometries.push_back({ a_kind, out.Offset(), static_cast<std::uint32_t>(a_count) });
-				packed.kindMask |= 1u << a_kind;
-			};
-			if (!a_model.triangles.empty()) {
-				beginGeometry(KindTriangles, a_model.triangles.size());
-				for (const auto& tri : a_model.triangles) {
-					auto box = EmptyBox();
-					for (const auto& v : tri.vertices) {
-						Grow(box, v, tri.radius + a_inflation);
-					}
-					out.Put(box);
-				}
-			}
-			if (!a_model.hulls.empty()) {
-				beginGeometry(KindHulls, a_model.hulls.size());
-				for (const auto& hull : a_model.hulls) {
-					auto box = EmptyBox();
-					Grow(box, hull.aabbMin, hull.radius + a_inflation);
-					Grow(box, hull.aabbMax, hull.radius + a_inflation);
-					out.Put(box);
-				}
-			}
-			if (!a_model.capsules.empty()) {
-				beginGeometry(KindCapsules, a_model.capsules.size());
-				for (const auto& capsule : a_model.capsules) {
-					auto box = EmptyBox();
-					Grow(box, capsule.p0, capsule.radius + a_inflation);
-					Grow(box, capsule.p1, capsule.radius + a_inflation);
-					out.Put(box);
-				}
-			}
-			return packed;
-		}
+		static_assert(sizeof(Layout::RootConstants) % sizeof(std::uint32_t) == 0, "root constants are pushed as 32-bit values");
 
 		// ---- GPU resources ------------------------------------------------------------------
 
@@ -310,7 +137,7 @@ namespace FasterNGIO::Gpu
 			rhi::RayTracingShaderTableRegion hit{};
 			std::uint32_t tlasSrv{ 0 };
 			float segmentLength{ 0.0f };
-			std::uint32_t debugCandidate{ 0xFFFFFFFFu };
+			std::uint32_t debugCandidate{ Layout::kNoDebugCandidate };
 			std::shared_ptr<FrameWork> current;
 		};
 
@@ -393,15 +220,22 @@ namespace FasterNGIO::Gpu
 					const auto& frame = *work.frame;
 					commands.BindLayout(context.layout);
 					commands.BindPipeline(context.pipeline);
-					const bool debug = context.debugCandidate != 0xFFFFFFFFu && frame.debug;
+					const bool debug = context.debugCandidate != Layout::kNoDebugCandidate && frame.debug;
 					if (debug) {
-						commands.CopyBufferRegion(frame.debug->GetHandle(), 0, frame.debugZero.resource->GetHandle(), 0, kDebugBytes);
+						commands.CopyBufferRegion(frame.debug->GetHandle(), 0, frame.debugZero.resource->GetHandle(), 0, Layout::kDebugBufferBytes);
 						GlobalBarrier(commands, Sync::Copy, Access::CopyDest, Sync::Raytracing, Access::UnorderedAccess);
 					}
-					const std::uint32_t constants[kRootConstantCount]{ context.tlasSrv, frame.candidatesSrv, frame.outputUav,
-						static_cast<std::uint32_t>(frame.queryCount), std::bit_cast<std::uint32_t>(context.segmentLength),
-						debug ? context.debugCandidate : 0xFFFFFFFFu, frame.debugUav };
-					commands.PushConstants(rhi::ShaderStage::All, 0, 0, 0, kRootConstantCount, constants);
+					const Layout::RootConstants constants{
+						.tlas = context.tlasSrv,
+						.candidates = frame.candidatesSrv,
+						.output = frame.outputUav,
+						.candidateCount = static_cast<std::uint32_t>(frame.queryCount),
+						.segmentLength = context.segmentLength,
+						.debugCandidate = debug ? context.debugCandidate : Layout::kNoDebugCandidate,
+						.debugBuffer = frame.debugUav,
+					};
+					const auto words = std::bit_cast<std::array<std::uint32_t, kRootConstantCount>>(constants);
+					commands.PushConstants(rhi::ShaderStage::All, 0, 0, 0, kRootConstantCount, words.data());
 					rhi::RayTracingDispatchDesc dispatch{};
 					dispatch.rayGenerationShaderTable = context.rayGen;
 					dispatch.missShaderTable = context.miss;
@@ -412,7 +246,7 @@ namespace FasterNGIO::Gpu
 					commands.CopyBufferRegion(frame.readback.resource->GetHandle(), 0, frame.output->GetHandle(), 0,
 						frame.queryCount * sizeof(std::uint32_t));
 					if (debug) {
-						commands.CopyBufferRegion(frame.debugReadback.resource->GetHandle(), 0, frame.debug->GetHandle(), 0, kDebugBytes);
+						commands.CopyBufferRegion(frame.debugReadback.resource->GetHandle(), 0, frame.debug->GetHandle(), 0, Layout::kDebugBufferBytes);
 					}
 				}
 			}
@@ -561,8 +395,8 @@ namespace FasterNGIO::Gpu
 			_passContext->miss = { _shaderTable.resource->GetHandle(), _missOffset, _recordStride, _recordStride };
 			_passContext->hit = { _shaderTable.resource->GetHandle(), _hitOffset, _recordStride * _hitCount, _recordStride };
 			_passContext->segmentLength = _desc.segmentLength;
-			if (const char* debugCandidate = std::getenv("FASTERNGIO_DEBUG_CANDIDATE")) {
-				_passContext->debugCandidate = static_cast<std::uint32_t>(std::strtoul(debugCandidate, nullptr, 10));
+			if (const auto debugCandidate = DebugCandidate()) {
+				_passContext->debugCandidate = *debugCandidate;
 			}
 			auto context = _passContext;
 			auto heartbeat = _heartbeat;
@@ -661,7 +495,7 @@ namespace FasterNGIO::Gpu
 				throw GpuUnsupportedError(_adapterName + " (" + GpuApiName(_desc.api) + ") lacks " + list);
 			}
 			_rayTracing = rayTracing;
-			_maxQueriesPerFrame = (std::min)(_desc.maxQueriesPerFrame, rayTracing.maxRayDispatchWidth);
+			_maxQueriesPerFrame = (std::min)(kMaxQueriesPerFrame, rayTracing.maxRayDispatchWidth);
 			_gpuUploadHeap = allocation.gpuUploadHeapSupported && !std::getenv("FASTERNGIO_NO_GPU_UPLOAD_HEAP");
 			constexpr const char* kTierNames[] = { "none", "DXR 1.0", "DXR 1.1", "VK_KHR_ray_tracing_pipeline", "DXR 2.0" };
 			const auto tier = static_cast<std::size_t>(rayTracing.backendTier);
@@ -669,66 +503,16 @@ namespace FasterNGIO::Gpu
 				_gpuUploadHeap ? "yes" : "no");
 		}
 
-#if FASTERNGIO_RUNTIME_SHADER_COMPILER
-		// Compiles GrassRejection.hlsl for the API (DXIL or SPIR-V), through the disk cache.
-		std::vector<std::byte> LoadShaderLibrary() const
-		{
-			const auto shaderPath = _desc.shaderDirectory / "GrassRejection.hlsl";
-			std::ifstream file(shaderPath, std::ios::binary);
-			if (!file) {
-				throw std::runtime_error("GPU: cannot read " + shaderPath.string());
-			}
-			const std::vector<char> source{ std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
-			org::services::ShaderCompiler compiler(_desc.shaderCacheDirectory);
-			if (!compiler.Available()) {
-				throw GpuUnsupportedError("the DXC shader compiler (dxcompiler) is not available");
-			}
-			org::services::ShaderCompileRequest request{};
-			request.sourceName = shaderPath.string();
-			request.source = std::as_bytes(std::span(source));
-			request.target = L"lib_6_6";
-			request.format = _desc.api == GpuApi::Vulkan ? org::services::ShaderBinaryFormat::Spirv : org::services::ShaderBinaryFormat::Dxil;
-			request.includeDirectories = { _desc.shaderDirectory };
-			request.dependencyFiles = { _desc.shaderDirectory / "Shared" / "GrassQueryMath.hlsli" };
-			request.defines = {
-				{ L"QUERY_RAY", _desc.mode == Rejection::QueryMode::Ray ? L"1" : L"0" },
-				{ L"DEBUG_QUERIES", std::getenv("FASTERNGIO_DEBUG_CANDIDATE") ? L"1" : L"0" },
-			};
-			const auto artifact = compiler.Compile(std::move(request));
-			if (!artifact) {
-				throw std::runtime_error("GPU: shader compilation failed:\n" + artifact.diagnostics);
-			}
-			return artifact.binary;
-		}
-#else
-		// Loads the SPIR-V variant compiled at build time (apps/FasterNGIO/CMakeLists.txt): one per
-		// QUERY_RAY and DEBUG_QUERIES value.
-		std::vector<std::byte> LoadShaderLibrary() const
-		{
-			if (_desc.api != GpuApi::Vulkan) {
-				throw GpuUnsupportedError("this build has only precompiled SPIR-V shaders, which need Vulkan");
-			}
-			std::string name = _desc.mode == Rejection::QueryMode::Ray ? "GrassRejection.ray" : "GrassRejection.shape";
-			if (std::getenv("FASTERNGIO_DEBUG_CANDIDATE")) {
-				name += ".debug";
-			}
-			const auto shaderPath = _desc.shaderDirectory / (name + ".spv");
-			std::ifstream file(shaderPath, std::ios::binary);
-			if (!file) {
-				throw GpuUnsupportedError("missing precompiled shader " + shaderPath.string());
-			}
-			const std::vector<char> binary{ std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
-			if (binary.empty() || binary.size() % 4 != 0) {
-				throw std::runtime_error("GPU: " + shaderPath.string() + " is not SPIR-V");
-			}
-			const auto bytes = std::as_bytes(std::span(binary));
-			return { bytes.begin(), bytes.end() };
-		}
-#endif
 
 		void CreatePipeline()
 		{
-			_shaderBinary = LoadShaderLibrary();
+			_shaderBinary = LoadShaderLibrary(ShaderLibraryDesc{
+				.api = _desc.api,
+				.mode = _desc.mode,
+				.shaderDirectory = _desc.shaderDirectory,
+				.cacheDirectory = _desc.shaderCacheDirectory,
+				.debugQueries = DebugCandidate().has_value(),
+			});
 
 			rhi::PushConstantRangeDesc constants{};
 			constants.visibility = rhi::ShaderStage::All;
@@ -775,9 +559,9 @@ namespace FasterNGIO::Gpu
 			_missOffset = AlignUp(_rayGenOffset + _recordStride, baseAlignment);
 			_hitOffset = AlignUp(_missOffset + _recordStride, baseAlignment);
 			std::vector<std::uint32_t> hitRecords;
-			for (std::uint32_t mask = 1; mask < (1u << KindCount); ++mask) {
+			for (std::uint32_t mask = 1; mask < (1u << kPrimitiveKindCount); ++mask) {
 				_subsetBase[mask] = static_cast<std::uint32_t>(hitRecords.size());
-				for (std::uint32_t kind = 0; kind < KindCount; ++kind) {
+				for (std::uint32_t kind = 0; kind < kPrimitiveKindCount; ++kind) {
 					if (mask & (1u << kind)) {
 						hitRecords.push_back(2 + kind);
 					}
@@ -867,6 +651,26 @@ namespace FasterNGIO::Gpu
 			if (_worldReady) {
 				ReleaseWorld();
 			}
+			std::uint64_t modelBytes = 0;
+			const auto buildOrder = CreateModels(a_world, modelBytes);
+			BuildBlases(buildOrder);
+			const auto instanceCount = BuildTlas(a_world.Instances());
+
+			// Staging copies are done; the device-local copies stay.
+			for (auto& model : _models) {
+				model.staging.Reset();
+			}
+			_worldReady = true;
+			_statModels.store(buildOrder.size(), std::memory_order_relaxed);
+			_statInstances.store(instanceCount, std::memory_order_relaxed);
+			_statModelBytes.store(modelBytes, std::memory_order_relaxed);
+			_statWorldSeconds.store(std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count(), std::memory_order_relaxed);
+		}
+
+		// Uploads every placed model with collision and creates (but does not build) its BLAS. Returns
+		// the models in build order; a_modelBytes sums their buffers.
+		[[nodiscard]] std::vector<std::uint32_t> CreateModels(const Rejection::WorldIndex& a_world, std::uint64_t& a_modelBytes)
+		{
 			const auto& models = a_world.Models();
 			const auto& instances = a_world.Instances();
 
@@ -880,7 +684,6 @@ namespace FasterNGIO::Gpu
 			_models.clear();
 			_models.resize(models.size());
 			std::vector<std::uint32_t> buildOrder;
-			std::uint64_t modelBytes = 0;
 			for (std::uint32_t i = 0; i < models.size(); ++i) {
 				if (models[i].collision.status != Collision::ExtractionStatus::HasCollision || minScale[i] == (std::numeric_limits<float>::max)()) {
 					continue;
@@ -902,7 +705,7 @@ namespace FasterNGIO::Gpu
 							  rhi::helpers::ResourceDesc::Buffer(model.dataBytes, rhi::HeapType::DeviceLocal, rhi::RF_None, "FasterNGIO model"), model.data),
 						"model buffer");
 				}
-				modelBytes += model.dataBytes;
+				a_modelBytes += model.dataBytes;
 				model.srv = AllocateDescriptor();
 				WriteRawSrv(model.srv, model.data, model.dataBytes);
 
@@ -910,8 +713,8 @@ namespace FasterNGIO::Gpu
 					rhi::RayTracingGeometryDesc desc{};
 					desc.type = rhi::RayTracingGeometryType::Aabbs;
 					desc.flags = rhi::RTGeometry_Opaque;
-					desc.aabbs.aabbBuffer = { model.data->GetHandle(), geometry.aabbOffset, static_cast<std::uint64_t>(geometry.count) * sizeof(Aabb) };
-					desc.aabbs.stride = sizeof(Aabb);
+					desc.aabbs.aabbBuffer = { model.data->GetHandle(), geometry.aabbOffset, static_cast<std::uint64_t>(geometry.count) * sizeof(Bounds) };
+					desc.aabbs.stride = sizeof(Bounds);
 					desc.aabbs.count = geometry.count;
 					model.geometries.push_back(desc);
 				}
@@ -936,15 +739,19 @@ namespace FasterNGIO::Gpu
 				buildOrder.push_back(i);
 				_statBlasBytes.fetch_add(storageBytes, std::memory_order_relaxed);
 			}
+			return buildOrder;
+		}
 
-			// Build the BLASes in frames bounded by a scratch budget.
+		// Builds the BLASes in frames bounded by a scratch budget (with the staging copies they need).
+		void BuildBlases(std::span<const std::uint32_t> a_buildOrder)
+		{
 			std::size_t next = 0;
-			while (next < buildOrder.size()) {
+			while (next < a_buildOrder.size()) {
 				auto work = std::make_shared<FrameWork>();
 				std::uint64_t scratchBytes = 0;
 				const auto first = next;
-				while (next < buildOrder.size()) {
-					const auto bytes = AlignUp(_models[buildOrder[next]].prebuild.scratchDataSizeInBytes, kAccelerationStructureAlignment);
+				while (next < a_buildOrder.size()) {
+					const auto bytes = AlignUp(_models[a_buildOrder[next]].prebuild.scratchDataSizeInBytes, kAccelerationStructureAlignment);
 					if (next > first && scratchBytes + bytes > kBlasScratchBudget) {
 						break;
 					}
@@ -954,7 +761,7 @@ namespace FasterNGIO::Gpu
 				EnsureScratch(_blasScratch, _blasScratchBytes, scratchBytes, "FasterNGIO BLAS scratch");
 				std::uint64_t scratchOffset = 0;
 				for (auto i = first; i < next; ++i) {
-					auto& model = _models[buildOrder[i]];
+					auto& model = _models[a_buildOrder[i]];
 					if (model.staging) {
 						work->stagingCopies.push_back({ model.data->GetHandle(), { model.staging->GetHandle(), model.dataBytes } });
 					}
@@ -973,11 +780,17 @@ namespace FasterNGIO::Gpu
 				// The scratch buffer is reused by the next chunk.
 				_device->WaitIdle();
 			}
+		}
 
-			// World TLAS: one instance per placed reference.
+		// Builds the world TLAS, one instance per placed reference whose model has a BLAS, and its
+		// SRV. Returns the instance count.
+		[[nodiscard]] std::size_t BuildTlas(std::span<const Rejection::Instance> a_instances)
+		{
+			// Every instance is visible to the shader's single ray mask.
+			constexpr std::uint8_t kInstanceMask = 0xFF;
 			std::vector<rhi::PackedRayTracingInstanceDesc> packed;
-			packed.reserve(instances.size());
-			for (const auto& instance : instances) {
+			packed.reserve(a_instances.size());
+			for (const auto& instance : a_instances) {
 				const auto& model = _models[instance.model];
 				if (!model.blas) {
 					continue;
@@ -985,7 +798,7 @@ namespace FasterNGIO::Gpu
 				rhi::RayTracingInstanceDesc desc{};
 				std::memcpy(desc.transform, instance.worldFromModel.m, sizeof(desc.transform));
 				desc.instanceID = model.srv;
-				desc.instanceMask = 0xFF;
+				desc.instanceMask = kInstanceMask;
 				desc.instanceContributionToHitGroupIndex = _subsetBase[model.kindMask];
 				desc.flags = rhi::RTInstance_ForceOpaque;
 				packed.push_back(rhi::PackRayTracingInstanceDesc(desc, model.blasAddress));
@@ -1034,16 +847,7 @@ namespace FasterNGIO::Gpu
 			srv.accel.sizeBytes = tlasBytes;
 			// The view addresses the TLAS itself; BasicRHI treats an empty resource as a null view.
 			Check(_device->CreateShaderResourceView({ _heap->GetHandle(), _tlasSrv }, _tlasStorage->GetHandle(), srv), "TLAS SRV");
-
-			// Staging copies are done; the device-local copies stay.
-			for (auto& model : _models) {
-				model.staging.Reset();
-			}
-			_worldReady = true;
-			_statModels.store(buildOrder.size(), std::memory_order_relaxed);
-			_statInstances.store(packed.size(), std::memory_order_relaxed);
-			_statModelBytes.store(modelBytes, std::memory_order_relaxed);
-			_statWorldSeconds.store(std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count(), std::memory_order_relaxed);
+			return packed.size();
 		}
 
 		void EnsureScratch(rhi::ResourcePtr& a_buffer, std::uint64_t& a_capacity, std::uint64_t a_bytes, const char* a_name)
@@ -1068,19 +872,19 @@ namespace FasterNGIO::Gpu
 			auto frame = std::make_unique<FrameSet>();
 			frame->candidatesSrv = AllocateDescriptor();
 			frame->outputUav = AllocateDescriptor();
-			if (_passContext->debugCandidate != 0xFFFFFFFFu) {
+			if (_passContext->debugCandidate != Layout::kNoDebugCandidate) {
 				Check(_device->CreateCommittedResource(
-						  rhi::helpers::ResourceDesc::Buffer(kDebugBytes, rhi::HeapType::DeviceLocal, rhi::RF_AllowUnorderedAccess, "FasterNGIO debug"), frame->debug),
+						  rhi::helpers::ResourceDesc::Buffer(Layout::kDebugBufferBytes, rhi::HeapType::DeviceLocal, rhi::RF_AllowUnorderedAccess, "FasterNGIO debug"), frame->debug),
 					"debug buffer");
-				frame->debugZero = CreateMapped(kDebugBytes, rhi::HeapType::Upload, "FasterNGIO debug zero");
-				std::memset(frame->debugZero.mapped, 0, kDebugBytes);
-				frame->debugReadback = CreateMapped(kDebugBytes, rhi::HeapType::Readback, "FasterNGIO debug readback");
+				frame->debugZero = CreateMapped(Layout::kDebugBufferBytes, rhi::HeapType::Upload, "FasterNGIO debug zero");
+				std::memset(frame->debugZero.mapped, 0, Layout::kDebugBufferBytes);
+				frame->debugReadback = CreateMapped(Layout::kDebugBufferBytes, rhi::HeapType::Readback, "FasterNGIO debug readback");
 				frame->debugUav = AllocateDescriptor();
 				rhi::UavDesc uav{};
 				uav.dimension = rhi::UavDim::Buffer;
 				uav.formatOverride = rhi::Format::R32_Typeless;
 				uav.buffer.kind = rhi::BufferViewKind::Raw;
-				uav.buffer.numElements = static_cast<std::uint32_t>(kDebugBytes / 4);
+				uav.buffer.numElements = static_cast<std::uint32_t>(Layout::kDebugBufferBytes / 4);
 				Check(_device->CreateUnorderedAccessView({ _heap->GetHandle(), frame->debugUav }, frame->debug->GetHandle(), uav), "debug UAV");
 			}
 			_frames.push_back(std::move(frame));
@@ -1156,9 +960,9 @@ namespace FasterNGIO::Gpu
 		{
 			if (a_frame.debug) {
 				const auto* words = reinterpret_cast<const std::uint32_t*>(a_frame.debugReadback.mapped);
-				const auto count = (std::min<std::uint32_t>)(words[0], 255);
+				const auto count = (std::min)(words[0], Layout::kDebugMaxRecords);
 				for (std::uint32_t i = 0; i < count; ++i) {
-					const auto* record = words + 4 + i * 24;
+					const auto* record = words + (Layout::kDebugHeaderBytes + i * Layout::kDebugRecordBytes) / 4;
 					const auto* f = reinterpret_cast<const float*>(record);
 					spdlog::info("debug stage={} instance={} primitive={} result={} p=({:.3f},{:.3f},{:.3f},{:.3f}) q=({:.3f},{:.3f},{:.3f},{:.3f}) a=({:.2f},{:.2f},{:.2f}) b=({:.3f},{:.3f},{:.3f},{:.3f}) c=({:.2f},{:.2f},{:.2f})",
 						record[0], record[1], record[2], record[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[16], f[17], f[18], f[19], f[20], f[21], f[22]);
@@ -1252,7 +1056,7 @@ namespace FasterNGIO::Gpu
 
 		GpuRejectorDesc _desc;
 		std::thread _thread;
-		Pipeline::MpscQueue<Command> _inbox;
+		Concurrency::MpscQueue<Command> _inbox;
 		std::atomic<std::uint64_t> _signal{ 0 };
 		std::atomic<bool> _stopping{ false };
 		std::atomic<std::uint64_t> _statModels{ 0 };
@@ -1284,7 +1088,7 @@ namespace FasterNGIO::Gpu
 		std::uint64_t _missOffset{ 0 };
 		std::uint64_t _hitOffset{ 0 };
 		std::uint32_t _hitCount{ 0 };
-		std::array<std::uint32_t, 1u << KindCount> _subsetBase{};
+		std::array<std::uint32_t, 1u << kPrimitiveKindCount> _subsetBase{};
 		std::unique_ptr<org::PersistentGraphHost> _host;
 		std::shared_ptr<org::Buffer> _heartbeat;
 		std::shared_ptr<PassContext> _passContext;
@@ -1302,6 +1106,17 @@ namespace FasterNGIO::Gpu
 		std::vector<std::unique_ptr<FrameSet>> _frames;
 		std::map<std::uint64_t, FrameSet*> _inFlight;
 	};
+
+	std::vector<Query> MakeQueries(std::span<const Grass::BladeCandidate> a_blades, std::span<const Rejection::QueryShape> a_shapes)
+	{
+		std::vector<Query> queries;
+		queries.reserve(a_blades.size());
+		for (const auto& blade : a_blades) {
+			const auto& shape = a_shapes[blade.groupIndex];
+			queries.push_back(Query{ blade.position[0], blade.position[1], blade.position[2] - shape.depth, (std::max)(shape.radius, 1.0e-3f) });
+		}
+		return queries;
+	}
 
 	TraceJob::TraceJob(std::vector<Query> a_queries) :
 		_queries(std::move(a_queries))

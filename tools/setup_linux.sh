@@ -22,11 +22,8 @@ case "$step" in
 esac
 
 source_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-deps_dir=${FASTERNGIO_DEPS_DIR:-$HOME/.local/share/fasterngio}
-# VK_EXT_descriptor_heap first shipped in Vulkan SDK 1.4.357.
-vulkan_headers_tag=${VULKAN_HEADERS_TAG:-v1.4.357}
-
-fail() { echo "error: $*" >&2; exit 1; }
+# shellcheck source=linux_common.sh
+source "$source_dir/tools/linux_common.sh"
 
 # GCC 14 is the oldest with the C++23 the sources use.
 gcc_ok() {
@@ -100,7 +97,7 @@ install_deps() {
 		"$vcpkg_dir/bootstrap-vcpkg.sh" -disableMetrics
 	fi
 
-	local headers_dir=$deps_dir/Vulkan-Headers-$vulkan_headers_tag
+	local headers_dir=$vulkan_headers_dir
 	if [[ ! -d $headers_dir/include/vulkan ]]; then
 		echo "=== Fetching Vulkan-Headers $vulkan_headers_tag ==="
 		rm -rf "$headers_dir"

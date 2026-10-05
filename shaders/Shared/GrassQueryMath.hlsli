@@ -158,4 +158,45 @@ bool OutsidePlane(float4 plane, float3 x)
 	return plane.x * x.x + plane.y * x.y + plane.z * x.z + plane.w > 0.0f;
 }
 
+// One face of a convex hull.
+struct HullFace
+{
+	float3 a;
+	float3 b;
+	float3 c;
+};
+
+// Convex hulls are stored differently on each side (a model buffer on the GPU, the collision model
+// on the CPU), so the tests take the hull as a type with PlaneCount(), Plane(i) (float4),
+// FaceCount(), Face(i) (HullFace) and Radius() (its convex radius).
+
+// Point x is inside every plane of the hull.
+template <typename Hull>
+bool HullContainsPoint(Hull hull, float3 x)
+{
+	for (uint i = 0; i < hull.PlaneCount(); ++i) {
+		if (OutsidePlane(hull.Plane(i), x)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Capsule [p, q] x r against a convex hull: either endpoint inside it, or the capsule within the
+// hull's convex radius of a face.
+template <typename Hull>
+bool CapsuleOverlapsHull(float3 p, float3 q, float r, Hull hull)
+{
+	if (HullContainsPoint(hull, p) || HullContainsPoint(hull, q)) {
+		return true;
+	}
+	for (uint i = 0; i < hull.FaceCount(); ++i) {
+		HullFace face = hull.Face(i);
+		if (CapsuleOverlapsTriangle(p, q, r, face.a, face.b, face.c, hull.Radius())) {
+			return true;
+		}
+	}
+	return false;
+}
+
 #endif

@@ -4,7 +4,7 @@
 #include <optional>
 #include <utility>
 
-namespace FasterNGIO::Pipeline
+namespace FasterNGIO::Concurrency
 {
 	// Lock-free multi-producer / single-consumer queue (Vyukov's intrusive design with a stub
 	// node). Push is wait-free for producers; TryPop must only be called by the one consumer.

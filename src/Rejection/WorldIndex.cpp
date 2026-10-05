@@ -1,6 +1,9 @@
 #include "Rejection/WorldIndex.h"
 
+#include "Archives/ArchiveResolver.h"
 #include "Collision/NifCollisionExtractor.h"
+#include "GameData/ModelPath.h"
+#include "GameData/StaticWorld.h"
 
 #include <oneapi/tbb/parallel_for.h>
 
@@ -57,7 +60,6 @@ namespace FasterNGIO::Rejection
 		const GameData::StaticWorldSnapshot& a_snapshot,
 		GameData::FormID a_worldFormID,
 		const Archives::ArchiveResolver& a_resolver,
-		const RejectionConfig& a_config,
 		float a_maxQueryReach)
 	{
 		struct PendingReference
@@ -78,10 +80,6 @@ namespace FasterNGIO::Rejection
 					continue;
 				}
 				++_stats.references;
-				if (a_config.ignoreForms.contains(placement.baseFormID)) {
-					++_stats.referencesIgnored;
-					continue;
-				}
 				auto path = GameData::NormalizeModelPath(baseIt->second.modelPath);
 				const auto [it, inserted] = modelIndexByPath.try_emplace(path, static_cast<std::uint32_t>(_models.size()));
 				if (inserted) {
@@ -93,7 +91,7 @@ namespace FasterNGIO::Rejection
 		_stats.models = _models.size();
 
 		const auto extractBegin = std::chrono::steady_clock::now();
-		const Collision::ExtractionOptions options{ .layerMask = a_config.layerMask };
+		const Collision::ExtractionOptions options{};
 		std::vector<std::uint8_t> missing(_models.size(), 0);
 		oneapi::tbb::parallel_for(std::size_t{ 0 }, _models.size(), [&](std::size_t i) {
 			const auto bytes = a_resolver.Read(_models[i].path);
@@ -110,55 +108,74 @@ namespace FasterNGIO::Rejection
 			_stats.modelsWithCollision += _models[i].collision.status == Collision::ExtractionStatus::HasCollision;
 		}
 
-		constexpr float cellSize = GameData::kSkyrimTerrainCellSize;
 		for (const auto& reference : references) {
-			const auto& model = _models[reference.model].collision;
-			if (model.status != Collision::ExtractionStatus::HasCollision) {
-				continue;
-			}
 			const auto& placement = *reference.placement;
-			Instance instance;
-			instance.model = reference.model;
-			instance.referenceFormID = placement.formID;
-			instance.baseFormID = placement.baseFormID;
-			instance.worldFromModel = Similarity::FromPlacement(placement.position, placement.rotation, placement.scale);
-			instance.modelFromWorld = instance.worldFromModel.Inverse();
+			AddInstance(reference.model, placement.formID, placement.baseFormID, Similarity::FromPlacement(placement.position, placement.rotation, placement.scale),
+				a_maxQueryReach);
+		}
+	}
 
-			constexpr auto inf = (std::numeric_limits<float>::max)();
-			Float3 lo{ inf, inf, inf };
-			Float3 hi{ -inf, -inf, -inf };
-			for (int corner = 0; corner < 8; ++corner) {
-				const Float3 local{
-					(corner & 1) ? model.aabbMax.x : model.aabbMin.x,
-					(corner & 2) ? model.aabbMax.y : model.aabbMin.y,
-					(corner & 4) ? model.aabbMax.z : model.aabbMin.z,
-				};
-				const auto world = instance.worldFromModel.Apply(local);
-				lo = { (std::min)(lo.x, world.x), (std::min)(lo.y, world.y), (std::min)(lo.z, world.z) };
-				hi = { (std::max)(hi.x, world.x), (std::max)(hi.y, world.y), (std::max)(hi.z, world.z) };
-			}
-			instance.aabbMin = lo;
-			instance.aabbMax = hi;
+	WorldIndex::WorldIndex(std::vector<ModelRecord> a_models, std::span<const PlacedModel> a_placements, float a_maxQueryReach) :
+		_models(std::move(a_models))
+	{
+		_stats.models = _models.size();
+		for (const auto& model : _models) {
+			_stats.modelsWithCollision += model.collision.status == Collision::ExtractionStatus::HasCollision;
+		}
+		_stats.references = a_placements.size();
+		for (const auto& placement : a_placements) {
+			AddInstance(placement.model, placement.referenceFormID, placement.baseFormID, placement.worldFromModel, a_maxQueryReach);
+		}
+	}
 
-			const auto index = static_cast<std::uint32_t>(_instances.size());
-			_instances.push_back(instance);
-			++_stats.referencesWithCollision;
+	void WorldIndex::AddInstance(std::uint32_t a_model, GameData::FormID a_reference, GameData::FormID a_base, const Similarity& a_worldFromModel, float a_maxQueryReach)
+	{
+		const auto& model = _models[a_model].collision;
+		if (model.status != Collision::ExtractionStatus::HasCollision) {
+			return;
+		}
+		Instance instance;
+		instance.model = a_model;
+		instance.referenceFormID = a_reference;
+		instance.baseFormID = a_base;
+		instance.worldFromModel = a_worldFromModel;
+		instance.modelFromWorld = instance.worldFromModel.Inverse();
 
-			const auto firstX = static_cast<std::int32_t>(std::floor((lo.x - a_maxQueryReach) / cellSize));
-			const auto lastX = static_cast<std::int32_t>(std::floor((hi.x + a_maxQueryReach) / cellSize));
-			const auto firstY = static_cast<std::int32_t>(std::floor((lo.y - a_maxQueryReach) / cellSize));
-			const auto lastY = static_cast<std::int32_t>(std::floor((hi.y + a_maxQueryReach) / cellSize));
-			for (auto y = firstY; y <= lastY; ++y) {
-				for (auto x = firstX; x <= lastX; ++x) {
-					_cells[CellKey(x, y)].push_back(index);
-				}
+		constexpr auto inf = (std::numeric_limits<float>::max)();
+		Float3 lo{ inf, inf, inf };
+		Float3 hi{ -inf, -inf, -inf };
+		for (int corner = 0; corner < 8; ++corner) {
+			const Float3 local{
+				(corner & 1) ? model.aabbMax.x : model.aabbMin.x,
+				(corner & 2) ? model.aabbMax.y : model.aabbMin.y,
+				(corner & 4) ? model.aabbMax.z : model.aabbMin.z,
+			};
+			const auto world = instance.worldFromModel.Apply(local);
+			lo = { (std::min)(lo.x, world.x), (std::min)(lo.y, world.y), (std::min)(lo.z, world.z) };
+			hi = { (std::max)(hi.x, world.x), (std::max)(hi.y, world.y), (std::max)(hi.z, world.z) };
+		}
+		instance.aabbMin = lo;
+		instance.aabbMax = hi;
+
+		const auto index = static_cast<std::uint32_t>(_instances.size());
+		_instances.push_back(instance);
+		++_stats.referencesWithCollision;
+
+		constexpr float cellSize = GameData::kSkyrimTerrainCellSize;
+		const auto firstX = static_cast<std::int32_t>(std::floor((lo.x - a_maxQueryReach) / cellSize));
+		const auto lastX = static_cast<std::int32_t>(std::floor((hi.x + a_maxQueryReach) / cellSize));
+		const auto firstY = static_cast<std::int32_t>(std::floor((lo.y - a_maxQueryReach) / cellSize));
+		const auto lastY = static_cast<std::int32_t>(std::floor((hi.y + a_maxQueryReach) / cellSize));
+		for (auto y = firstY; y <= lastY; ++y) {
+			for (auto x = firstX; x <= lastX; ++x) {
+				_cells[GameData::PackCellCoords(x, y)].push_back(index);
 			}
 		}
 	}
 
 	std::span<const std::uint32_t> WorldIndex::InstancesInCell(std::int32_t a_cellX, std::int32_t a_cellY) const
 	{
-		const auto it = _cells.find(CellKey(a_cellX, a_cellY));
+		const auto it = _cells.find(GameData::PackCellCoords(a_cellX, a_cellY));
 		return it != _cells.end() ? std::span<const std::uint32_t>(it->second) : std::span<const std::uint32_t>();
 	}
 }

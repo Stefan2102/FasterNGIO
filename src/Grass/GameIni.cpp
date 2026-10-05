@@ -1,65 +1,18 @@
 #include "Grass/GameIni.h"
 
+#include "Grass/Placement.h"
 #include "Platform/DataDirectory.h"
+#include "Platform/FileSystem.h"
 #include "Platform/GameInstall.h"
 #include "Platform/IniFile.h"
+#include "Platform/ModOrganizer.h"
 
 #include <cstdlib>
-#include <system_error>
-
-#if defined(_WIN32)
-#include <Windows.h>
-#include <ShlObj.h>
-#endif
 
 namespace FasterNGIO::Grass
 {
 	namespace
 	{
-		[[nodiscard]] bool IsDirectory(const std::filesystem::path& a_path)
-		{
-			std::error_code error;
-			return !a_path.empty() && std::filesystem::is_directory(a_path, error);
-		}
-
-		[[nodiscard]] bool IniFlagTrue(const std::optional<std::string>& a_value)
-		{
-			if (!a_value) {
-				return false;
-			}
-			std::string value;
-			for (const auto c : *a_value) {
-				value.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-			}
-			return value == "true" || value == "1";
-		}
-
-		[[nodiscard]] std::filesystem::path DocumentsDirectory([[maybe_unused]] const std::filesystem::path& a_pluginsTxt)
-		{
-#if defined(_WIN32)
-			PWSTR documents = nullptr;
-			std::filesystem::path result;
-			if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &documents)) && documents) {
-				result = documents;
-			}
-			CoTaskMemFree(documents);
-			return result;
-#else
-			// plugins.txt in a Wine/Proton prefix: <user>/AppData/Local/Skyrim Special Edition/plugins.txt.
-			const auto gameData = a_pluginsTxt.parent_path();
-			const auto local = gameData.parent_path();
-			if (local.filename() == "Local" && local.parent_path().filename() == "AppData") {
-				return local.parent_path().parent_path() / "Documents";
-			}
-			const char* home = std::getenv("HOME");
-			if (!home || !*home) {
-				return {};
-			}
-			return std::filesystem::path(home) / ".steam" / "steam" / "steamapps" / "compatdata" / "489830" / "pfx" / "drive_c" / "users" / "steamuser" /
-			       "Documents";
-#endif
-		}
-
 		// The game reads values with atoi/atof semantics: the leading number, the rest ignored.
 		[[nodiscard]] std::optional<std::uint32_t> ParseInt(const std::string& a_text)
 		{
@@ -82,22 +35,25 @@ namespace FasterNGIO::Grass
 		}
 	}
 
-	std::optional<GameIniDirectory> LocateGameIniDirectory(const std::filesystem::path& a_pluginsTxt, const std::optional<std::filesystem::path>& a_explicit)
+	std::optional<GameIniDirectory> LocateGameIniDirectory(const std::filesystem::path& a_pluginsTxt, const std::filesystem::path& a_data,
+		const std::optional<std::filesystem::path>& a_explicit, const std::optional<Platform::UserFolders>& a_userFolders)
 	{
 		if (a_explicit) {
-			return IsDirectory(*a_explicit) ? std::optional<GameIniDirectory>(GameIniDirectory{ *a_explicit, "--game-ini-dir" }) : std::nullopt;
+			return Platform::IsDirectory(*a_explicit) ? std::optional<GameIniDirectory>(GameIniDirectory{ *a_explicit, "--game-ini-dir" }) : std::nullopt;
 		}
 		const auto profile = a_pluginsTxt.parent_path();
-		if (const auto settings = Platform::FindInDirectory(profile, "settings.ini")) {
-			if (const auto ini = Platform::IniFile::Load(*settings); ini && IniFlagTrue(ini->Get("General", "LocalSettings"))) {
-				return GameIniDirectory{ profile, "MO2 profile" };
-			}
+		if (Platform::Mo2ProfileUsesLocalIni(profile)) {
+			return GameIniDirectory{ profile, "MO2 profile" };
 		}
-		const auto myGames = DocumentsDirectory(a_pluginsTxt) / "My Games";
-		for (const auto store : { Platform::GameStore::Steam, Platform::GameStore::Gog, Platform::GameStore::Epic, Platform::GameStore::MicrosoftStore }) {
-			if (const auto folder = myGames / Platform::GameUserFolderName(store); IsDirectory(folder)) {
-				return GameIniDirectory{ folder, "My Games" };
-			}
+		// The install's own store decides the folder name ("Skyrim Special Edition GOG", ...).
+		std::filesystem::path myGames;
+		if (const auto install = Platform::InspectGameFolder(a_data, a_userFolders)) {
+			myGames = install->iniDirectory;
+		} else if (const auto folders = a_userFolders.value_or(Platform::DefaultUserFolders()); !folders.documents.empty()) {
+			myGames = folders.documents / "My Games" / Platform::GameUserFolderName(Platform::GameStore::Steam);
+		}
+		if (Platform::IsDirectory(myGames)) {
+			return GameIniDirectory{ myGames, "My Games" };
 		}
 		return std::nullopt;
 	}

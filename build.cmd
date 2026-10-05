@@ -1,9 +1,10 @@
 @echo off
 rem Builds and packages FasterNGIO for Windows (CMake preset) and Linux (tools/build_linux.sh under WSL).
 rem
-rem   build.cmd [all|windows|linux] [cpu] [test]
+rem   build.cmd [all|windows|linux] [gpu|cpu] [test]
 rem
 rem   all (default)  both platforms; windows / linux builds one
+rem   gpu (default)  the GPU variant (vs2026, Linux with Vulkan ray tracing)
 rem   cpu            the CPU-only variant (vs2026-cpu, Linux without the GPU stack)
 rem   test           run the tests after building
 rem
@@ -26,7 +27,7 @@ if /i "%ARG%"=="linux" set "TARGET=linux" & goto next
 if /i "%ARG%"=="gpu" set "VARIANT=gpu" & goto next
 if /i "%ARG%"=="cpu" set "VARIANT=cpu" & goto next
 if /i "%ARG%"=="test" set "TEST=1" & goto next
-echo usage: %~nx0 [all^|windows^|linux] [cpu] [test]
+echo usage: %~nx0 [all^|windows^|linux] [gpu^|cpu] [test]
 exit /b 2
 :next
 shift

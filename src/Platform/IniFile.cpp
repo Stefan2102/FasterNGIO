@@ -1,7 +1,7 @@
 #include "Platform/IniFile.h"
 
-#include <algorithm>
-#include <cctype>
+#include "Platform/Text.h"
+
 #include <fstream>
 #include <iterator>
 
@@ -9,26 +9,9 @@ namespace FasterNGIO::Platform
 {
 	namespace
 	{
-		[[nodiscard]] std::string_view Trim(std::string_view a_text)
-		{
-			const auto first = a_text.find_first_not_of(" \t\r\n");
-			if (first == std::string_view::npos) {
-				return {};
-			}
-			const auto last = a_text.find_last_not_of(" \t\r\n");
-			return a_text.substr(first, last - first + 1);
-		}
-
-		[[nodiscard]] std::string Lower(std::string_view a_text)
-		{
-			std::string result(a_text);
-			std::ranges::transform(result, result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-			return result;
-		}
-
 		[[nodiscard]] std::string Key(std::string_view a_section, std::string_view a_key)
 		{
-			return Lower(a_section) + '\n' + Lower(a_key);
+			return LowerAscii(a_section) + '\n' + LowerAscii(a_key);
 		}
 	}
 

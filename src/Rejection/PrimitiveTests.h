@@ -22,15 +22,30 @@ namespace FasterNGIO::Rejection
 		       (std::min)(a_p.z, a_q.z) - a_radius <= a_max.z && (std::max)(a_p.z, a_q.z) + a_radius >= a_min.z;
 	}
 
+	// A collision model's hull, as the shared hull tests read it.
+	struct ModelHull
+	{
+		const Collision::CollisionModel& model;
+		const Collision::Hull& hull;
+
+		[[nodiscard]] Hlsl::uint PlaneCount() const { return hull.planeCount; }
+		[[nodiscard]] Hlsl::float4 Plane(Hlsl::uint a_index) const
+		{
+			const auto& plane = model.hullPlanes[hull.firstPlane + a_index];
+			return { plane.x, plane.y, plane.z, plane.w };
+		}
+		[[nodiscard]] Hlsl::uint FaceCount() const { return hull.triangleCount; }
+		[[nodiscard]] Hlsl::HullFace Face(Hlsl::uint a_index) const
+		{
+			const auto& face = model.hullTriangles[hull.firstTriangle + a_index];
+			return { ToHlsl(face.vertices[0]), ToHlsl(face.vertices[1]), ToHlsl(face.vertices[2]) };
+		}
+		[[nodiscard]] float Radius() const { return hull.radius; }
+	};
+
 	[[nodiscard]] inline bool HullContains(const Collision::CollisionModel& a_model, const Collision::Hull& a_hull, const Hlsl::float3& a_point)
 	{
-		for (std::uint32_t i = 0; i < a_hull.planeCount; ++i) {
-			const auto& plane = a_model.hullPlanes[a_hull.firstPlane + i];
-			if (Hlsl::OutsidePlane(Hlsl::float4{ plane.x, plane.y, plane.z, plane.w }, a_point)) {
-				return false;
-			}
-		}
-		return true;
+		return Hlsl::HullContainsPoint(ModelHull{ a_model, a_hull }, a_point);
 	}
 
 	[[nodiscard]] inline bool CapsuleOverlapsTriangle(const Collision::Triangle& a_triangle, const Hlsl::float3& a_p, const Hlsl::float3& a_q, float a_radius)
@@ -42,19 +57,11 @@ namespace FasterNGIO::Rejection
 	[[nodiscard]] inline bool CapsuleOverlapsHull(const Collision::CollisionModel& a_model, const Collision::Hull& a_hull, const Hlsl::float3& a_p, const Hlsl::float3& a_q,
 		float a_radius)
 	{
+		// The GPU gets the same early-out from the hull's BLAS AABB.
 		if (!SegmentOverlapsAabb(a_p, a_q, a_radius + a_hull.radius, a_hull.aabbMin, a_hull.aabbMax)) {
 			return false;
 		}
-		if (HullContains(a_model, a_hull, a_p) || HullContains(a_model, a_hull, a_q)) {
-			return true;
-		}
-		for (std::uint32_t i = 0; i < a_hull.triangleCount; ++i) {
-			const auto& tri = a_model.hullTriangles[a_hull.firstTriangle + i];
-			if (Hlsl::CapsuleOverlapsTriangle(a_p, a_q, a_radius, ToHlsl(tri.vertices[0]), ToHlsl(tri.vertices[1]), ToHlsl(tri.vertices[2]), a_hull.radius)) {
-				return true;
-			}
-		}
-		return false;
+		return Hlsl::CapsuleOverlapsHull(a_p, a_q, a_radius, ModelHull{ a_model, a_hull });
 	}
 
 	[[nodiscard]] inline bool CapsuleOverlapsCapsule(const Collision::Capsule& a_capsule, const Hlsl::float3& a_p, const Hlsl::float3& a_q, float a_radius)
