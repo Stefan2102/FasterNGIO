@@ -46,6 +46,15 @@ namespace FasterNGIO::GameData
 	{
 		FormID formID{};
 		std::string editorID;
+		// WNAM: the parent worldspace.
+		std::optional<FormID> parentWorldFormID;
+		// PNAM: what the worldspace takes from its parent; bit 0 (Use Land Data) includes the default
+		// water height.
+		std::uint16_t parentUseFlags{ 0 };
+		// DNAM's second float; the engine's default is 0.
+		float defaultWaterHeight{ 0.0f };
+
+		[[nodiscard]] bool UsesParentLandData() const { return parentWorldFormID.has_value() && (parentUseFlags & 0x1u) != 0; }
 	};
 
 	struct CellInfo
@@ -55,9 +64,12 @@ namespace FasterNGIO::GameData
 		std::uint16_t cellFlags{ 0 };
 		std::optional<std::int32_t> gridX;
 		std::optional<std::int32_t> gridY;
+		// XCLW as the engine keeps it (rounded to a whole unit); unset when the record has none or a value
+		// of at least 2^31 (0x7F7FFFFF and the like), which leave the worldspace's default.
 		std::optional<float> waterHeight;
 
 		[[nodiscard]] bool IsInterior() const { return (cellFlags & 0x1u) != 0; }
+		[[nodiscard]] bool HasWater() const { return (cellFlags & 0x2u) != 0; }
 	};
 
 	struct LandTextureInfo

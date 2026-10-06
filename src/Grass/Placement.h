@@ -65,7 +65,8 @@ namespace FasterNGIO::Grass
 		std::uint32_t grassPatchSize{ grassEvalSize << 7 };
 		// fTexturePctThreshold.
 		float alphaThreshold{ 0.0f };
-		// Water height for cells that have none.
+		// Water height for cells flagged Has Water without an XCLW of their own, in place of the
+		// worldspace's default.
 		std::optional<float> waterHeight;
 		// NGIO's Global-grass-scale: multiplies every blade's final scale.
 		float globalScale{ 1.0f };

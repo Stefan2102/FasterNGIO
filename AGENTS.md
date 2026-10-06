@@ -102,6 +102,12 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   `AddGroup`'s descriptor (center and half extents of the stored positions, padded by 30). By default a
   type keeps at most 8191 blades per quadrant, the engine's `AddInstances` limit, thinned evenly rather
   than dropping the last batches (`--no-blade-cap`, the launcher's advanced checkbox, turns it off).
+- **Water is the engine's.** The GRAS water test compares the terrain height with
+  `TESObjectCELL::GetWaterHeight`: an exterior cell flagged Has Water uses its XCLW (as `Load` stores
+  it: ignored from 2^31 up, else rounded), otherwise its worldspace's DNAM default (0 without one),
+  taken from the parent while PNAM's Use Land Data bit is set; any other cell has no water (-FLT_MAX).
+  Most exterior cells have no XCLW, so the worldspace default (Tamriel's -14000) decides the coast.
+  Only water states 0-5 are tested; 6 and 7 place regardless (`PassesWaterFilter`).
 - **Grass the game cannot load is not placed.** When a GRAS model is in no loose file or archive,
   `LoadGrassType` returns null: generation skips the type (no RNG draws), and loading a cache skips its
   group header but not its blocks, misreading the rest of the file. `MeasureGrassModels` lists those

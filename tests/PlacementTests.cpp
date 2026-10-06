@@ -115,6 +115,88 @@ TEST(VanillaPlacement, CountsButSkipsGrassWhoseModelCannotLoad)
 	}
 }
 
+TEST(VanillaPlacement, TakesWaterHeightsAsTheEngineDoes)
+{
+	World world;
+	auto& snapshot = world.snapshot;
+	GameData::WorldInfo parent;
+	parent.formID = FormID{ 0x3C };
+	parent.defaultWaterHeight = -14000.0f;
+	snapshot.worldsByFormID.emplace(parent.formID, parent);
+	GameData::WorldInfo child;
+	child.formID = FormID{ 0x3D };
+	child.parentWorldFormID = parent.formID;
+	child.parentUseFlags = 1;
+	child.defaultWaterHeight = 500.0f;
+	snapshot.worldsByFormID.emplace(child.formID, child);
+
+	GameData::CellInfo cell;
+	cell.formID = FormID{ 0x900 };
+	cell.worldFormID = child.formID;
+	cell.cellFlags = 0x2;
+	snapshot.cellsByFormID.emplace(cell.formID, cell);
+	world.land.parentCell = cell.formID;
+	auto& stored = snapshot.cellsByFormID.at(cell.formID);
+	Grass::PlacementSettings settings;
+
+	// Without XCLW, the worldspace's default, here the parent's through Use Land Data.
+	EXPECT_EQ(Grass::Internal::CellWaterHeight(snapshot, world.land, settings), -14000.0f);
+	snapshot.worldsByFormID.at(child.formID).parentUseFlags = 0;
+	EXPECT_EQ(Grass::Internal::CellWaterHeight(snapshot, world.land, settings), 500.0f);
+	settings.waterHeight = 42.0f;
+	EXPECT_EQ(Grass::Internal::CellWaterHeight(snapshot, world.land, settings), 42.0f);
+	stored.waterHeight = -10.0f;
+	EXPECT_EQ(Grass::Internal::CellWaterHeight(snapshot, world.land, settings), -10.0f);
+	// A cell not flagged Has Water has none, whatever its XCLW.
+	stored.cellFlags = 0;
+	EXPECT_EQ(Grass::Internal::CellWaterHeight(snapshot, world.land, settings), -(std::numeric_limits<float>::max)());
+}
+
+TEST(VanillaPlacement, KeepsUnderwaterGrassUnderTheWater)
+{
+	World world;
+	auto& grass = world.snapshot.grassesByFormID.at(FormID{ 0x100 });
+	grass.underwaterState = GameData::GrassWaterState::BelowOnlyAtLeast;
+	grass.distanceFromWaterLevel = 10;
+	GameData::WorldInfo tamriel;
+	tamriel.formID = FormID{ 0x3C };
+	tamriel.defaultWaterHeight = -100.0f;
+	world.snapshot.worldsByFormID.emplace(tamriel.formID, tamriel);
+	GameData::CellInfo cell;
+	cell.formID = FormID{ 0x900 };
+	cell.worldFormID = tamriel.formID;
+	cell.cellFlags = 0x2;
+	world.snapshot.cellsByFormID.emplace(cell.formID, cell);
+	world.land.parentCell = cell.formID;
+
+	// Flat land at 0 is above the worldspace's water: no seaweed, though the cell has no XCLW.
+	const Grass::PlacementSettings settings;
+	EXPECT_TRUE(Grass::GenerateCellCandidates(world.snapshot, world.land, settings).blades.empty());
+	// Raising the water over the land grows it.
+	world.snapshot.cellsByFormID.at(cell.formID).waterHeight = 50.0f;
+	EXPECT_FALSE(Grass::GenerateCellCandidates(world.snapshot, world.land, settings).blades.empty());
+}
+
+TEST(VanillaPlacement, IgnoresTheWaterStatesTheEngineDoesNotTest)
+{
+	GameData::GrassInfo grass;
+	grass.distanceFromWaterLevel = 10;
+	constexpr float kNoWater = -(std::numeric_limits<float>::max)();
+	grass.underwaterState = GameData::GrassWaterState::BothAtMostAbove;
+	EXPECT_TRUE(Grass::Internal::PassesWaterFilter(grass, 1000.0f, 0.0f));
+	grass.underwaterState = GameData::GrassWaterState::BothAtMostBelow;
+	EXPECT_TRUE(Grass::Internal::PassesWaterFilter(grass, -1000.0f, 0.0f));
+	// Without water, only grass that may grow above it does.
+	grass.underwaterState = GameData::GrassWaterState::AboveOnlyAtLeast;
+	EXPECT_TRUE(Grass::Internal::PassesWaterFilter(grass, -5000.0f, kNoWater));
+	grass.underwaterState = GameData::GrassWaterState::AboveOnlyAtMost;
+	EXPECT_FALSE(Grass::Internal::PassesWaterFilter(grass, -5000.0f, kNoWater));
+	grass.underwaterState = GameData::GrassWaterState::BelowOnlyAtLeast;
+	EXPECT_FALSE(Grass::Internal::PassesWaterFilter(grass, -5000.0f, kNoWater));
+	grass.underwaterState = GameData::GrassWaterState::BothAtLeast;
+	EXPECT_TRUE(Grass::Internal::PassesWaterFilter(grass, -5000.0f, kNoWater));
+}
+
 TEST(VanillaPlacement, GrowsTheSeasonsSwappedGrassList)
 {
 	World world;

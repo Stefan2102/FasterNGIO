@@ -2,14 +2,27 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <limits>
+#include <optional>
 
 namespace FasterNGIO::GameData::Internal
 {
 	namespace
 	{
-		[[nodiscard]] bool IsValidCellWaterHeight(float a_value) noexcept
+		// XCLW as TESObjectCELL::Load stores it: a value of at least 2^31 is ignored (the cell keeps its
+		// FLT_MAX default, which means the worldspace's water height); anything else is rounded with
+		// cvttss2si, plus one when the remainder is at least 0.5 (so negative heights truncate toward
+		// zero). Out-of-range and NaN values convert to INT_MIN, as cvttss2si does.
+		[[nodiscard]] std::optional<float> EngineCellWaterHeight(float a_value) noexcept
 		{
-			return std::isfinite(a_value) && std::abs(a_value) < 100000000.0f;
+			constexpr float kLimit = 2147483648.0f;
+			if (a_value >= kLimit) {
+				return std::nullopt;
+			}
+			const auto whole = (std::isnan(a_value) || a_value < -kLimit) ? (std::numeric_limits<std::int32_t>::min)() : static_cast<std::int32_t>(a_value);
+			const auto remainder = a_value - static_cast<float>(whole);
+			return static_cast<float>(remainder >= 0.5f ? whole + 1 : whole);
 		}
 
 		[[nodiscard]] FormID ResolveDefaultLandTexture(FormID a_landTextureFormID)
@@ -75,9 +88,7 @@ namespace FasterNGIO::GameData::Internal
 				a_cell.gridY = ReadLE<std::int32_t>(a_payload, 4);
 				return kCellGrid;
 			} else if (a_signature == kSigXclw && a_payload.size() >= 4) {
-				if (const auto waterHeight = ReadLE<float>(a_payload, 0); IsValidCellWaterHeight(waterHeight)) {
-					a_cell.waterHeight = waterHeight;
-				}
+				a_cell.waterHeight = EngineCellWaterHeight(ReadLE<float>(a_payload, 0));
 				return kCellWater;
 			}
 			return 0;
@@ -93,7 +104,12 @@ namespace FasterNGIO::GameData::Internal
 		while (cursor.Next(subrecord)) {
 			if (subrecord.signature == kSigEdid) {
 				info.editorID = ReadString(subrecord.payload);
-				break;
+			} else if (subrecord.signature == kSigWnam && subrecord.payload.size() >= 4) {
+				info.parentWorldFormID = a_record.localFormIDs.Resolve(FormID{ ReadLE<std::uint32_t>(subrecord.payload, 0) });
+			} else if (subrecord.signature == kSigPnam && subrecord.payload.size() >= 2) {
+				info.parentUseFlags = ReadLE<std::uint16_t>(subrecord.payload, 0);
+			} else if (subrecord.signature == kSigDnam && subrecord.payload.size() >= 8) {
+				info.defaultWaterHeight = ReadLE<float>(subrecord.payload, 4);
 			}
 		}
 		return info;

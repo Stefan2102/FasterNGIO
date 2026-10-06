@@ -129,7 +129,8 @@ namespace
 		PluginWriter cellData;
 		PluginWriter xclc;
 		xclc.U32(2).U32(static_cast<std::uint32_t>(-3)).U32(0);
-		cellData.Sub("DATA", { 0, 0 }).Sub("XCLC", xclc.Data());
+		// Has Water, with a height the engine rounds to 13.
+		cellData.Sub("DATA", { 2, 0 }).Sub("XCLC", xclc.Data()).Sub("XCLW", PluginWriter{}.F32(12.6f).Data());
 		PluginWriter refData;
 		PluginWriter name;
 		name.U32(0x000B00);
@@ -140,8 +141,15 @@ namespace
 		cellChildren.Group(0x000900, 9, PluginWriter{}.Record("REFR", 0x000A00, refData.Data()).Data());
 		PluginWriter worldChildren;
 		worldChildren.Record("CELL", 0x000900, cellData.Data()).Bytes(cellChildren.Data());
+		// Negative heights truncate toward zero; 2^31 and above leave the worldspace's default.
+		worldChildren.Record("CELL", 0x000904, PluginWriter{}.Sub("DATA", { 2, 0 }).Sub("XCLW", PluginWriter{}.F32(-12.7f).Data()).Data());
+		worldChildren.Record("CELL", 0x000905, PluginWriter{}.Sub("DATA", { 2, 0 }).Sub("XCLW", PluginWriter{}.U32(0x7F7FFFFFu).Data()).Data());
 		PluginWriter world;
-		world.Record("WRLD", 0x00003C, PluginWriter{}.Sub("EDID", Z("Tamriel")).Data()).Group(0x00003C, 1, worldChildren.Data());
+		world.Record("WRLD", 0x00003C, PluginWriter{}.Sub("EDID", Z("Tamriel")).Sub("DNAM", PluginWriter{}.F32(-2048.0f).F32(-14000.0f).Data()).Data())
+			.Group(0x00003C, 1, worldChildren.Data());
+		// A child worldspace using its parent's land data (PNAM bit 0).
+		world.Record("WRLD", 0x00003D,
+			PluginWriter{}.Sub("EDID", Z("Child")).Sub("WNAM", PluginWriter{}.U32(0x3C).Data()).Sub("PNAM", PluginWriter{}.U16(1).Data()).Data());
 
 		PluginWriter plugin;
 		plugin.Bytes(Tes4(7, {}))
@@ -260,6 +268,18 @@ TEST(GameData, ResolvesOverridesDeletionsAndCompressedRecords)
 	EXPECT_EQ(cell.worldFormID, FormID{ 0x3C });
 	EXPECT_EQ(cell.gridX, 2);
 	EXPECT_EQ(cell.gridY, -3);
+	// Water as the engine loads it.
+	EXPECT_TRUE(cell.HasWater());
+	EXPECT_EQ(cell.waterHeight, 13.0f);
+	EXPECT_EQ(snapshot.cellsByFormID.at(FormID{ 0x904 }).waterHeight, -12.0f);
+	EXPECT_FALSE(snapshot.cellsByFormID.at(FormID{ 0x905 }).waterHeight.has_value());
+	const auto& tamriel = snapshot.worldsByFormID.at(FormID{ 0x3C });
+	EXPECT_EQ(tamriel.defaultWaterHeight, -14000.0f);
+	EXPECT_FALSE(tamriel.UsesParentLandData());
+	const auto& child = snapshot.worldsByFormID.at(FormID{ 0x3D });
+	EXPECT_EQ(child.parentWorldFormID, FormID{ 0x3C });
+	EXPECT_TRUE(child.UsesParentLandData());
+	EXPECT_EQ(child.defaultWaterHeight, 0.0f);
 
 	const GameData::CellKey key{ FormID{ 0x3C }, 2, -3 };
 	ASSERT_TRUE(snapshot.exteriorPlacementsByCell.contains(key));

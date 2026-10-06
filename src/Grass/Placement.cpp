@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <limits>
 
 namespace FasterNGIO::Grass
 {
@@ -112,10 +113,42 @@ namespace FasterNGIO::Grass
 
 		std::optional<float> CellWaterHeight(const GameData::StaticWorldSnapshot& a_snapshot, const LandInfo& a_land, const PlacementSettings& a_settings)
 		{
-			if (const auto cellIt = a_snapshot.cellsByFormID.find(a_land.parentCell); cellIt != a_snapshot.cellsByFormID.end() && cellIt->second.waterHeight) {
-				return *cellIt->second.waterHeight;
+			// TESObjectCELL::GetWaterHeight: an exterior cell flagged Has Water uses its own height, else
+			// its worldspace's default (taken from the parent while the worldspace uses the parent's land
+			// data); any other cell, or one without a worldspace, has no water (-FLT_MAX).
+			constexpr float kNoWater = -(std::numeric_limits<float>::max)();
+			const auto cellIt = a_snapshot.cellsByFormID.find(a_land.parentCell);
+			if (cellIt == a_snapshot.cellsByFormID.end()) {
+				return a_settings.waterHeight;
 			}
-			return a_settings.waterHeight;
+			const auto& cell = cellIt->second;
+			if (!cell.HasWater() || cell.IsInterior()) {
+				return kNoWater;
+			}
+			if (cell.waterHeight) {
+				return *cell.waterHeight;
+			}
+			if (a_settings.waterHeight) {
+				return *a_settings.waterHeight;
+			}
+			const GameData::WorldInfo* world = nullptr;
+			if (cell.worldFormID) {
+				if (const auto worldIt = a_snapshot.worldsByFormID.find(*cell.worldFormID); worldIt != a_snapshot.worldsByFormID.end()) {
+					world = std::addressof(worldIt->second);
+				}
+			}
+			if (!world) {
+				return kNoWater;
+			}
+			// Bounded, in case a load order makes the parents a cycle.
+			for (int depth = 0; depth < 64 && world->UsesParentLandData(); ++depth) {
+				const auto parentIt = a_snapshot.worldsByFormID.find(*world->parentWorldFormID);
+				if (parentIt == a_snapshot.worldsByFormID.end()) {
+					break;
+				}
+				world = std::addressof(parentIt->second);
+			}
+			return world->defaultWaterHeight;
 		}
 
 		std::uint32_t PatchLatticeSide(const GameData::GrassInfo& a_grass, const PlacementSettings& a_settings)
@@ -286,11 +319,9 @@ namespace FasterNGIO::Grass
 				return a_height >= a_waterHeight + range || a_height <= a_waterHeight - range;
 			case GrassWaterState::BothAtMost:
 				return a_height >= a_waterHeight - range && a_height <= a_waterHeight + range;
-			case GrassWaterState::BothAtMostAbove:
-				return a_height <= a_waterHeight + range;
-			case GrassWaterState::BothAtMostBelow:
-				return a_height >= a_waterHeight - range;
 			default:
+				// The engine's switch has no case for BothAtMostAbove and BothAtMostBelow (or anything
+				// else), so they place regardless of water.
 				return true;
 			}
 		}

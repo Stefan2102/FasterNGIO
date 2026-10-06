@@ -62,6 +62,8 @@ namespace FasterNGIO::GameData::Internal
 	inline constexpr FourCC kSigMnam = MakeFourCC('M', 'N', 'A', 'M');
 	inline constexpr FourCC kSigMods = MakeFourCC('M', 'O', 'D', 'S');
 	inline constexpr FourCC kSigDnam = MakeFourCC('D', 'N', 'A', 'M');
+	inline constexpr FourCC kSigPnam = MakeFourCC('P', 'N', 'A', 'M');
+	inline constexpr FourCC kSigWnam = MakeFourCC('W', 'N', 'A', 'M');
 	inline constexpr FourCC kSigTx00 = MakeFourCC('T', 'X', '0', '0');
 
 	inline constexpr std::size_t kRecordHeaderSize = 24;
