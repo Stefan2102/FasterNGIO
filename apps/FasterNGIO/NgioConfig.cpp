@@ -230,6 +230,9 @@ namespace FasterNGIO::App
 		readFloat("RayCastConfig", "Ray-cast-width", a_settings.rayWidth);
 		readFloat("RayCastConfig", "Ray-cast-width-multiplier", a_settings.rayWidthMultiplier);
 
+		readBool("GrassConfig", "Use-grass-cache", a_settings.useGrassCache);
+		readBool("GrassConfig", "Only-load-from-cache", a_settings.onlyLoadFromCache);
+		readBool("GrassConfig", "Updating-Cache", a_settings.updatingCache);
 		readBool("GrassConfig", "Super-dense-grass", a_settings.superDenseGrass);
 		readInt("GrassConfig", "Super-dense-mode", a_settings.superDenseMode);
 		readInt("GrassConfig", "Ensure-max-grass-types-setting", a_settings.ensureMaxGrassTypes);
@@ -393,6 +396,10 @@ namespace FasterNGIO::App
 			}
 			a_options.skipWorldspaces = a_settings.skipWorldspaces;
 			a_options.onlyWorldspaces = a_settings.onlyWorldspaces;
+		}
+
+		if (!a_options.skipEmptyCells) {
+			a_options.skipEmptyCells = a_settings.OnlyLoadsFromCache();
 		}
 
 		const auto& overrides = a_options.rejectionOverrides;

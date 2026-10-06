@@ -36,10 +36,17 @@ resolved case-insensitively as the game does, and `--plugins` defaults to the St
 
 Grass settings come from the game's INIs, as the game would read them: `iMinGrassSize`,
 `iMaxGrassTypesPerTexure` and `fTexturePctThreshold` from `[Grass]` in `Skyrim.ini` then
-`SkyrimCustom.ini`. They're read from the MO2 profile when it uses profile-specific INIs, otherwise from
-`My Games\Skyrim Special Edition` (which MO2's virtual filesystem also redirects). `--game-ini-dir`
-picks the folder, `--no-game-ini` ignores the INIs, and the matching command-line options override
-them.
+`SkyrimCustom.ini`, then each enabled plugin's own INI in `Data` (`Data\<plugin>.ini`, in `plugins.txt`
+order), later files overriding earlier ones. The game INIs are read from the MO2 profile when it uses
+profile-specific INIs, otherwise from `My Games\Skyrim Special Edition` (which MO2's virtual filesystem
+also redirects). `--game-ini-dir` picks the folder, `--no-game-ini` ignores all of these INIs, and the
+matching command-line options override them.
+
+A cell left with no grass gets NGIO's 4-byte empty cache file, because without any file the game
+generates that cell's grass itself every time it loads, and would regrow grass that rejection removed.
+When NGIO's `GrassControl.ini` has `Use-grass-cache` and `Only-load-from-cache` on (as
+Extend-grass-distance requires), the game never does that, so such cells get no file at all.
+`--write-empty-cells` and `--skip-empty-cells` choose either way.
 
 Placement (`--placement`):
 

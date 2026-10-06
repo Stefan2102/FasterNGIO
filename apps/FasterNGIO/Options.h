@@ -81,8 +81,12 @@ namespace FasterNGIO::App
 		// Threads that only write cache files (see Pipeline::FileWriterPool).
 		std::uint32_t writerThreads{ 1 };
 		bool overwrite{ false };
-		// Cells with no grass get no cache file (--write-empty-cells writes NGIO's 4-byte one).
-		bool skipEmptyCells{ true };
+		// Cells with no grass get no cache file instead of NGIO's 4-byte one (--skip-empty-cells, or
+		// --write-empty-cells for false). Unset, ApplyNgioSettings decides: skipped only when the game
+		// cannot generate a missing cell's grass itself (NGIO's Use-grass-cache and
+		// Only-load-from-cache on, Updating-Cache off). Otherwise the engine, finding no file,
+		// generates the cell at runtime on every load, and regrows grass rejection removed.
+		std::optional<bool> skipEmptyCells;
 		// Keep at most the engine's 8191 blades of a grass type per cell quadrant, thinned evenly
 		// (Grass::BlockLayout); --no-blade-cap keeps them all.
 		bool capQuadrantBlades{ true };

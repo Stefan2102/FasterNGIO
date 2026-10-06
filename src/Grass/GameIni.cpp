@@ -6,6 +6,8 @@
 #include "Platform/GameInstall.h"
 #include "Platform/IniFile.h"
 #include "Platform/ModOrganizer.h"
+#include "Platform/Text.h"
+#include "Platform/WholeFile.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -59,16 +61,70 @@ namespace FasterNGIO::Grass
 		return std::nullopt;
 	}
 
-	GrassIniSettings ReadGrassIniSettings(const std::filesystem::path& a_directory)
+	std::vector<std::filesystem::path> PluginIniFiles(const std::filesystem::path& a_data, const std::filesystem::path& a_pluginsTxt)
 	{
-		GrassIniSettings result;
-		// The grass settings belong to the engine's Skyrim.ini collection, which loads Skyrim.ini and
-		// then SkyrimCustom.ini; SkyrimPrefs.ini only feeds the prefs collection.
-		for (const auto* name : { "Skyrim.ini", "SkyrimCustom.ini" }) {
-			const auto path = Platform::FindInDirectory(a_directory, name);
-			if (!path) {
+		std::vector<std::filesystem::path> files;
+		const auto bytes = Platform::ReadWholeFile(a_pluginsTxt);
+		if (!bytes) {
+			return files;
+		}
+		// As the engine reads plugins.txt for these (fgets in text mode): every line, '#' comments
+		// and lines without '*' skipped, nothing trimmed but the line break.
+		const std::string_view text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+		std::size_t begin = 0;
+		while (begin < text.size()) {
+			const auto end = (std::min)(text.find('\n', begin), text.size());
+			auto line = text.substr(begin, end - begin);
+			begin = end + 1;
+			if (line.ends_with('\r')) {
+				line.remove_suffix(1);
+			}
+			if (!line.starts_with('*')) {
 				continue;
 			}
+			const auto name = line.substr(1);
+			const auto lower = Platform::LowerAscii(name);
+			auto extension = lower.find(".esp");
+			if (extension == std::string::npos) {
+				extension = lower.find(".esl");
+			}
+			if (extension == std::string::npos) {
+				extension = lower.find(".esm");
+			}
+			if (extension == std::string::npos) {
+				continue;
+			}
+			if (auto path = Platform::FindInDirectory(a_data, std::string(name.substr(0, extension)) + ".ini")) {
+				files.push_back(std::move(*path));
+			}
+		}
+		return files;
+	}
+
+	std::vector<std::filesystem::path> SkyrimIniFiles(const std::optional<std::filesystem::path>& a_iniDirectory, std::span<const std::filesystem::path> a_pluginInis)
+	{
+		std::vector<std::filesystem::path> files;
+		if (a_iniDirectory) {
+			for (const auto* name : { "Skyrim.ini", "SkyrimCustom.ini" }) {
+				if (auto path = Platform::FindInDirectory(*a_iniDirectory, name)) {
+					files.push_back(std::move(*path));
+				}
+			}
+		}
+		files.insert(files.end(), a_pluginInis.begin(), a_pluginInis.end());
+		return files;
+	}
+
+	GrassIniSettings ReadGrassIniSettings(const std::filesystem::path& a_directory)
+	{
+		return ReadGrassIniSettings(SkyrimIniFiles(a_directory));
+	}
+
+	GrassIniSettings ReadGrassIniSettings(std::span<const std::filesystem::path> a_files)
+	{
+		GrassIniSettings result;
+		for (const auto& file : a_files) {
+			const auto* path = &file;
 			const auto ini = Platform::IniFile::Load(*path);
 			if (!ini) {
 				continue;
@@ -95,6 +151,11 @@ namespace FasterNGIO::Grass
 
 	Archives::ArchiveIniLists ReadArchiveIniLists(const std::filesystem::path& a_directory)
 	{
+		return ReadArchiveIniLists(SkyrimIniFiles(a_directory));
+	}
+
+	Archives::ArchiveIniLists ReadArchiveIniLists(std::span<const std::filesystem::path> a_files)
+	{
 		// Comma-separated archive names, spaces around each trimmed.
 		const auto split = [](const std::string& a_text) {
 			std::vector<std::string> names;
@@ -111,12 +172,8 @@ namespace FasterNGIO::Grass
 			return names;
 		};
 		Archives::ArchiveIniLists lists;
-		for (const auto* name : { "Skyrim.ini", "SkyrimCustom.ini" }) {
-			const auto path = Platform::FindInDirectory(a_directory, name);
-			if (!path) {
-				continue;
-			}
-			const auto ini = Platform::IniFile::Load(*path);
+		for (const auto& path : a_files) {
+			const auto ini = Platform::IniFile::Load(path);
 			if (!ini) {
 				continue;
 			}

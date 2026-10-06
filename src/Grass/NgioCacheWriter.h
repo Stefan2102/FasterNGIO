@@ -17,6 +17,7 @@ namespace FasterNGIO::Grass
 
 	struct NgioGrassGroup
 	{
+		// As the engine writes it: the GRAS MODL string as stored (case kept), without "meshes\".
 		std::string modelPath;
 		// The GRAS wave period, which drives the shader's wind animation; 0 freezes the grass.
 		float wavePeriod{ 0.0f };

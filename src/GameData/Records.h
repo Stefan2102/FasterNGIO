@@ -49,8 +49,10 @@ namespace FasterNGIO::GameData
 		// WNAM: the parent worldspace.
 		std::optional<FormID> parentWorldFormID;
 		// PNAM: what the worldspace takes from its parent; bit 0 (Use Land Data) includes the default
-		// water height.
+		// land and water heights.
 		std::uint16_t parentUseFlags{ 0 };
+		// DNAM's first float: the height of a LAND without VHGT; the engine's default is -2048.
+		float defaultLandHeight{ -2048.0f };
 		// DNAM's second float; the engine's default is 0.
 		float defaultWaterHeight{ 0.0f };
 
@@ -175,6 +177,8 @@ namespace FasterNGIO::GameData
 		std::optional<FormID> worldFormID;
 		std::optional<std::int32_t> cellX;
 		std::optional<std::int32_t> cellY;
+		// From VHGT; the snapshot fills a LAND without it with the worldspace's default land height,
+		// as the engine does, and sets hasHeights.
 		std::array<float, VertexCount> heights{};
 		std::array<std::array<std::uint8_t, 3>, VertexCount> vertexColors{};
 		bool hasHeights{ false };

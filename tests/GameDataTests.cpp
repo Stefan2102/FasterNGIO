@@ -7,7 +7,10 @@
 #include <gtest/gtest.h>
 #include <zlib.h>
 
+#include <algorithm>
 #include <cstring>
+#include <format>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -137,19 +140,37 @@ namespace
 		PluginWriter position;
 		position.F32(9000.0f).F32(-11000.0f).F32(50.0f).F32(0).F32(0).F32(0);
 		refData.Sub("NAME", name.Data()).Sub("DATA", position.Data());
+		// LAND: VHGT is a starting height (in units of 8), one delta per vertex and 3 padding bytes.
+		const auto vhgt = [](float a_start) {
+			PluginWriter data;
+			data.F32(a_start).Bytes(std::vector<std::uint8_t>(33 * 33 + 3, 0));
+			return data.Data();
+		};
+		const std::vector<std::uint8_t> vclr(33 * 33 * 3, 7);
+		// DATA without bits 0 and 1: the engine ignores the VHGT and VCLR that follow.
+		PluginWriter unflaggedLand;
+		unflaggedLand.Sub("DATA", PluginWriter{}.U32(0).Data()).Sub("VHGT", vhgt(10.0f)).Sub("VCLR", vclr);
 		PluginWriter cellChildren;
-		cellChildren.Group(0x000900, 9, PluginWriter{}.Record("REFR", 0x000A00, refData.Data()).Data());
+		cellChildren.Group(0x000900, 9, PluginWriter{}.Record("REFR", 0x000A00, refData.Data()).Record("LAND", 0x000A10, unflaggedLand.Data()).Data());
+		PluginWriter flaggedLand;
+		flaggedLand.Sub("DATA", PluginWriter{}.U32(0x3).Data()).Sub("VHGT", vhgt(4.0f)).Sub("VCLR", vclr);
 		PluginWriter worldChildren;
 		worldChildren.Record("CELL", 0x000900, cellData.Data()).Bytes(cellChildren.Data());
+		worldChildren.Record("CELL", 0x000906, PluginWriter{}.Sub("DATA", { 0, 0 }).Sub("XCLC", PluginWriter{}.U32(0).U32(0).U32(0).Data()).Data())
+			.Group(0x000906, 9, PluginWriter{}.Record("LAND", 0x000A11, flaggedLand.Data()).Data());
 		// Negative heights truncate toward zero; 2^31 and above leave the worldspace's default.
 		worldChildren.Record("CELL", 0x000904, PluginWriter{}.Sub("DATA", { 2, 0 }).Sub("XCLW", PluginWriter{}.F32(-12.7f).Data()).Data());
 		worldChildren.Record("CELL", 0x000905, PluginWriter{}.Sub("DATA", { 2, 0 }).Sub("XCLW", PluginWriter{}.U32(0x7F7FFFFFu).Data()).Data());
 		PluginWriter world;
-		world.Record("WRLD", 0x00003C, PluginWriter{}.Sub("EDID", Z("Tamriel")).Sub("DNAM", PluginWriter{}.F32(-2048.0f).F32(-14000.0f).Data()).Data())
+		world.Record("WRLD", 0x00003C, PluginWriter{}.Sub("EDID", Z("Tamriel")).Sub("DNAM", PluginWriter{}.F32(-1000.0f).F32(-14000.0f).Data()).Data())
 			.Group(0x00003C, 1, worldChildren.Data());
-		// A child worldspace using its parent's land data (PNAM bit 0).
+		// A child worldspace using its parent's land data (PNAM bit 0), with a LAND without VHGT.
+		PluginWriter childChildren;
+		childChildren.Record("CELL", 0x000907, PluginWriter{}.Sub("DATA", { 0, 0 }).Sub("XCLC", PluginWriter{}.U32(1).U32(1).U32(0).Data()).Data())
+			.Group(0x000907, 9, PluginWriter{}.Record("LAND", 0x000A12, PluginWriter{}.Sub("DATA", PluginWriter{}.U32(0).Data()).Data()).Data());
 		world.Record("WRLD", 0x00003D,
-			PluginWriter{}.Sub("EDID", Z("Child")).Sub("WNAM", PluginWriter{}.U32(0x3C).Data()).Sub("PNAM", PluginWriter{}.U16(1).Data()).Data());
+			PluginWriter{}.Sub("EDID", Z("Child")).Sub("WNAM", PluginWriter{}.U32(0x3C).Data()).Sub("PNAM", PluginWriter{}.U16(1).Data()).Data())
+			.Group(0x00003D, 1, childChildren.Data());
 
 		PluginWriter plugin;
 		plugin.Bytes(Tes4(7, {}))
@@ -235,6 +256,29 @@ TEST(GameData, ReadsTheLoadOrderFromPluginsTxt)
 	EXPECT_EQ(loadOrder[0].recordCount, 7u);
 }
 
+TEST(GameData, RefusesMoreThan254FullPlugins)
+{
+	// The game wraps the 255th full plugin's index into the light plugins' 0xFE; there is no load
+	// order to reproduce, so the run stops and names the first plugin past the limit.
+	TempDirectory temp;
+	std::vector<GameData::LoadOrderEntry> entries;
+	for (int i = 0; i < 255; ++i) {
+		const auto path = temp.Path() / std::format("Plugin{:03}.esp", i);
+		WriteBytes(path, Tes4(0, {}));
+		entries.push_back(GameData::LoadOrderEntry{ .path = path });
+	}
+	auto fits = entries;
+	fits.pop_back();
+	EXPECT_EQ(GameData::PrepareLoadOrder(fits).back().fileID.slot, 0xFDu);
+	try {
+		(void)GameData::PrepareLoadOrder(entries);
+		FAIL() << "expected the load order to be refused";
+	} catch (const std::runtime_error& e) {
+		EXPECT_NE(std::string(e.what()).find("255 enabled"), std::string::npos) << e.what();
+		EXPECT_NE(std::string(e.what()).find("Plugin254.esp"), std::string::npos) << e.what();
+	}
+}
+
 TEST(GameData, ResolvesOverridesDeletionsAndCompressedRecords)
 {
 	const Install install;
@@ -280,6 +324,29 @@ TEST(GameData, ResolvesOverridesDeletionsAndCompressedRecords)
 	EXPECT_EQ(child.parentWorldFormID, FormID{ 0x3C });
 	EXPECT_TRUE(child.UsesParentLandData());
 	EXPECT_EQ(child.defaultWaterHeight, 0.0f);
+	EXPECT_EQ(tamriel.defaultLandHeight, -1000.0f);
+	EXPECT_EQ(child.defaultLandHeight, -2048.0f);
+
+	// LAND as the engine loads it: VHGT and VCLR count only after DATA's bits 0 and 1, and a LAND
+	// without heights sits at its worldspace's default land height (the parent's, through PNAM).
+	const auto landOf = [&](FormID a_world, FormID a_land) -> const GameData::LandInfo& {
+		const auto& lands = snapshot.landsByWorldspace.at(a_world);
+		return *std::ranges::find(lands, a_land, &GameData::LandInfo::formID);
+	};
+	const auto& unflagged = landOf(FormID{ 0x3C }, FormID{ 0xA10 });
+	EXPECT_TRUE(unflagged.hasHeights);
+	EXPECT_EQ(unflagged.heights.front(), -1000.0f);
+	EXPECT_EQ(unflagged.heights.back(), -1000.0f);
+	EXPECT_FALSE(unflagged.hasVertexColors);
+	EXPECT_EQ(unflagged.vertexColors[0][0], 255u);
+	const auto& flagged = landOf(FormID{ 0x3C }, FormID{ 0xA11 });
+	EXPECT_EQ(flagged.heights.front(), 32.0f);
+	EXPECT_EQ(flagged.heights.back(), 32.0f);
+	EXPECT_TRUE(flagged.hasVertexColors);
+	EXPECT_EQ(flagged.vertexColors[0][0], 7u);
+	const auto& childLand = landOf(FormID{ 0x3D }, FormID{ 0xA12 });
+	EXPECT_EQ(childLand.cellX, 1);
+	EXPECT_EQ(childLand.heights[500], -1000.0f);
 
 	const GameData::CellKey key{ FormID{ 0x3C }, 2, -3 };
 	ASSERT_TRUE(snapshot.exteriorPlacementsByCell.contains(key));
@@ -294,6 +361,18 @@ TEST(GameData, NormalizesModelPaths)
 	EXPECT_EQ(GameData::NormalizeModelPath("  Rocks/Rock01.NIF "), "meshes\\rocks\\rock01.nif");
 	EXPECT_EQ(GameData::NormalizeModelPath("Meshes\\Trees\\Pine.nif"), "meshes\\trees\\pine.nif");
 	EXPECT_EQ(GameData::NormalizeModelPath("textures\\rock.dds"), "");
+}
+
+TEST(GameData, GrassCacheModelPathIsTheEnginesString)
+{
+	// MODL as stored, case and separators kept, after the "meshes\" the engine prefixes and skips.
+	EXPECT_EQ(GameData::GrassCacheModelPath("Landscape\\Grass\\DeadPineDrJ03.nif"), "Landscape\\Grass\\DeadPineDrJ03.nif");
+	EXPECT_EQ(GameData::GrassCacheModelPath("Meshes\\Landscape\\Grass\\A.nif"), "Landscape\\Grass\\A.nif");
+	EXPECT_EQ(GameData::GrassCacheModelPath("Data/meshes/Grass/B.nif"), "Grass/B.nif");
+	// A path starting with m keeps itself unless it starts with "meshes\" exactly.
+	EXPECT_EQ(GameData::GrassCacheModelPath("Meshes/Grass/C.nif"), "Meshes/Grass/C.nif");
+	EXPECT_EQ(GameData::GrassCacheModelPath("Mods\\meshes\\D.nif"), "Mods\\meshes\\D.nif");
+	EXPECT_EQ(GameData::GrassCacheModelPath(std::string_view("Grass\\E.nif\0\0", 13)), "Grass\\E.nif");
 }
 
 TEST(Archives, ReadsArchivesAndPrefersLooseFiles)

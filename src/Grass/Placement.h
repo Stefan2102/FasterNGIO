@@ -82,6 +82,7 @@ namespace FasterNGIO::Grass
 	struct CellGrassGroup
 	{
 		const GameData::GrassInfo* grass{ nullptr };
+		// What the .cgid stores (GameData::GrassCacheModelPath), not the resource key.
 		std::string modelPath;
 	};
 

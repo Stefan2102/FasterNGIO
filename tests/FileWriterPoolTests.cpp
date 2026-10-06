@@ -1,4 +1,5 @@
 #include "Pipeline/FileWriterPool.h"
+#include "Platform/WholeFile.h"
 
 #include "TestSupport.h"
 
@@ -6,6 +7,8 @@
 
 #include <atomic>
 #include <filesystem>
+#include <iterator>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -85,4 +88,27 @@ TEST(FileWriterPool, FailedWritesAreCounted)
 	}
 	EXPECT_EQ(tally->written.load(), 0u);
 	EXPECT_EQ(tally->failed.load(), 1u);
+}
+
+TEST(FileWriterPool, WritesWholeFilesOrNothing)
+{
+	TempDirectory directory;
+	const auto path = directory.Path() / "cell.cgid";
+	Tests::WriteText(path, "old");
+	Platform::WriteWholeFile(path, std::vector<std::uint8_t>{ 1, 2, 3, 4 });
+	EXPECT_EQ(Tests::ReadAll(path), (std::vector<std::uint8_t>{ 1, 2, 3, 4 }));
+	// Written beside the target and renamed over it: nothing is left under another name.
+	EXPECT_EQ(std::distance(std::filesystem::directory_iterator(directory.Path()), std::filesystem::directory_iterator{}), 1);
+
+	// A file that cannot be created leaves neither it nor a temporary behind.
+	const auto missing = directory.Path() / "missing" / "cell.cgid";
+	EXPECT_THROW(Platform::WriteWholeFile(missing, std::vector<std::uint8_t>{ 1 }), std::runtime_error);
+	EXPECT_FALSE(std::filesystem::exists(missing.parent_path()));
+
+	// Nor does one whose rename fails (a folder holds the name).
+	const auto folder = directory.Path() / "folder.cgid";
+	std::filesystem::create_directory(folder);
+	EXPECT_THROW(Platform::WriteWholeFile(folder, std::vector<std::uint8_t>{ 1 }), std::runtime_error);
+	EXPECT_TRUE(std::filesystem::is_directory(folder));
+	EXPECT_FALSE(std::filesystem::exists(directory.Path() / "folder.cgid.tmp"));
 }

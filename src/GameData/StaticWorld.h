@@ -65,4 +65,8 @@ namespace FasterNGIO::GameData
 	// Resolves the shards (in load order) the way the engine does: the last plugin's version of a
 	// form wins, and a deleted or ignored version removes it.
 	[[nodiscard]] StaticWorldSnapshot BuildStaticWorldSnapshot(std::span<const StaticPluginShard> a_shards);
+
+	// The worldspace a_world's land data (default land and water heights) comes from: itself, or its
+	// parent while PNAM's Use Land Data bit is set, as TESWorldSpace does. Null when a_world is unknown.
+	[[nodiscard]] const WorldInfo* LandDataWorld(const std::unordered_map<FormID, WorldInfo, FormIDHash>& a_worlds, FormID a_world);
 }

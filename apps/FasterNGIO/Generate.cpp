@@ -307,7 +307,7 @@ namespace FasterNGIO::App
 				pipeline.placement = placement.settings;
 				pipeline.blockLayout = Grass::BlockLayout{ .bladesPerBlock = std::addressof(a_shared.grassModels.bladesPerBlock), .capQuadrantBlades = options.capQuadrantBlades };
 				pipeline.overwrite = options.overwrite;
-				pipeline.skipEmpty = options.skipEmptyCells;
+				pipeline.skipEmpty = options.skipEmptyCells.value_or(false);
 				pipeline.existingFiles = a_shared.existingFiles;
 				pipeline.shapesByGrass = &a_shared.shapes.byGrass;
 				pipeline.backend = rejection->backend;
@@ -438,7 +438,12 @@ namespace FasterNGIO::App
 		const auto begin = std::chrono::steady_clock::now();
 		auto options = a_requested;
 		const auto ngio = LoadNgioSettingsFor(options);
+		const bool emptyCellsChosen = a_requested.skipEmptyCells.has_value();
 		ApplyNgioSettings(ngio, options);
+		spdlog::info("cells with no grass: {} ({})", options.skipEmptyCells.value_or(false) ? "no file" : "empty cache file",
+			emptyCellsChosen        ? "as requested"
+			: ngio.OnlyLoadsFromCache() ? "NGIO only loads grass from the cache"
+										: "the game would generate a cell without a file at runtime");
 		const auto seasonsSettings = LoadSeasonsSettingsFor(options);
 		try {
 			SetStage(a_control, RunStage::LoadingPlugins);
@@ -481,7 +486,7 @@ namespace FasterNGIO::App
 			ThrowIfStopped(a_control);
 			writer.emplace(options.writerThreads, kMaxPendingWriteBytes);
 			std::optional<std::unordered_set<std::string>> existingFiles;
-			if (options.skipEmptyCells && options.overwrite) {
+			if (options.skipEmptyCells.value_or(false) && options.overwrite) {
 				existingFiles.emplace(ListExistingCaches(options.outputDirectory));
 			}
 			RunShared shared{

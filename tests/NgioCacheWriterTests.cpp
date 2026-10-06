@@ -31,6 +31,7 @@ TEST(NgioCacheWriter, SerializesGroupsLittleEndian)
 	group.wavePeriod = 10.0f;
 	group.grassFormID = 0x12345678;
 	group.fitToSlope = true;
+	group.uniformScaling = true;
 	auto& block = group.blocks.emplace_back();
 	block.descriptorWords.fill(0xA1B2C3D4u);
 	block.payloadWords = { 0x0102, 0xFFEE };
@@ -43,8 +44,10 @@ TEST(NgioCacheWriter, SerializesGroupsLittleEndian)
 	const auto afterPath = 8u + group.modelPath.size() + 1u;
 	EXPECT_EQ(U32At(bytes, afterPath), 0x41200000u);
 	EXPECT_EQ(U32At(bytes, afterPath + 4), 0x12345678u);
-	EXPECT_EQ(bytes[afterPath + 8], 0u);
-	EXPECT_EQ(bytes[afterPath + 10], 1u);
+	// Fit to slope, uniform scale, vertex lighting: the engine's order.
+	EXPECT_EQ(bytes[afterPath + 8], 1u);
+	EXPECT_EQ(bytes[afterPath + 9], 1u);
+	EXPECT_EQ(bytes[afterPath + 10], 0u);
 	EXPECT_EQ(bytes[bytes.size() - 4], 0x02u);
 	EXPECT_EQ(bytes[bytes.size() - 3], 0x01u);
 	EXPECT_EQ(bytes[bytes.size() - 2], 0xEEu);

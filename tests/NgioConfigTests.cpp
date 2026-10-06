@@ -160,6 +160,25 @@ TEST(NgioConfig, ResolvesFeatures)
 	EXPECT_FALSE(App::ResolveNgioFeatures(App::NgioSettings{}, LoadOrder()).cliffs);
 }
 
+TEST(NgioConfig, EmptyCellsGetAFileUnlessTheGameOnlyLoadsFromTheCache)
+{
+	const auto skips = [](const App::NgioSettings& a_settings, std::optional<bool> a_requested = std::nullopt) {
+		App::GenerateOptions options;
+		options.skipEmptyCells = a_requested;
+		App::ApplyNgioSettings(a_settings, options);
+		return *options.skipEmptyCells;
+	};
+	// Without a file a cell would be generated at runtime: NGIO's defaults, or no NGIO at all.
+	EXPECT_FALSE(skips(App::NgioSettings{}));
+	EXPECT_FALSE(skips(Parse("[GrassConfig]\nUse-grass-cache = true\n")));
+	EXPECT_FALSE(skips(Parse("[GrassConfig]\nOnly-load-from-cache = true\n")));
+	EXPECT_FALSE(skips(Parse("[GrassConfig]\nUse-grass-cache = true\nOnly-load-from-cache = true\nUpdating-Cache = true\n")));
+	EXPECT_TRUE(skips(Parse("[GrassConfig]\nUse-grass-cache = true\nOnly-load-from-cache = true\n")));
+	// The command line (or the launcher) wins.
+	EXPECT_TRUE(skips(App::NgioSettings{}, true));
+	EXPECT_FALSE(skips(Parse("[GrassConfig]\nUse-grass-cache = true\nOnly-load-from-cache = true\n"), false));
+}
+
 TEST(NgioConfig, CommandLineValuesWinOverTheFile)
 {
 	auto settings = Parse(

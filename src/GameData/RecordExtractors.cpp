@@ -109,6 +109,7 @@ namespace FasterNGIO::GameData::Internal
 			} else if (subrecord.signature == kSigPnam && subrecord.payload.size() >= 2) {
 				info.parentUseFlags = ReadLE<std::uint16_t>(subrecord.payload, 0);
 			} else if (subrecord.signature == kSigDnam && subrecord.payload.size() >= 8) {
+				info.defaultLandHeight = ReadLE<float>(subrecord.payload, 0);
 				info.defaultWaterHeight = ReadLE<float>(subrecord.payload, 4);
 			}
 		}
@@ -181,14 +182,19 @@ namespace FasterNGIO::GameData::Internal
 		// VTXT belongs to the ATXT before it.
 		std::optional<std::uint16_t> currentLayerIndex;
 		std::optional<std::uint8_t> currentQuadrant;
+		// DATA's flags, as TESObjectLAND::Load keeps them while it reads on: VHGT counts only after a
+		// DATA with bit 0 (vertex normals and heights), VCLR only after one with bit 1 (vertex colours).
+		std::uint32_t dataFlags = 0;
 		SubrecordCursor cursor(a_data);
 		Subrecord subrecord;
 		while (cursor.Next(subrecord)) {
 			const auto payload = subrecord.payload;
-			if (subrecord.signature == kSigVhgt && payload.size() >= sizeof(float) + LandInfo::VertexCount) {
+			if (subrecord.signature == kSigData && payload.size() >= 4) {
+				dataFlags = ReadLE<std::uint32_t>(payload, 0);
+			} else if (subrecord.signature == kSigVhgt && (dataFlags & 0x1u) != 0 && payload.size() >= sizeof(float) + LandInfo::VertexCount) {
 				info.heights = DecodeLandHeights(payload);
 				info.hasHeights = true;
-			} else if (subrecord.signature == kSigVclr && payload.size() >= LandInfo::VertexCount * 3) {
+			} else if (subrecord.signature == kSigVclr && (dataFlags & 0x2u) != 0 && payload.size() >= LandInfo::VertexCount * 3) {
 				for (std::size_t i = 0; i < LandInfo::VertexCount; ++i) {
 					info.vertexColors[i] = { payload[i * 3 + 0], payload[i * 3 + 1], payload[i * 3 + 2] };
 				}

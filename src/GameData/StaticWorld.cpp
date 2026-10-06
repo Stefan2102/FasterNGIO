@@ -213,6 +213,13 @@ namespace FasterNGIO::GameData
 				land.worldFormID = cell->worldFormID;
 				land.cellX = cell->gridX;
 				land.cellY = cell->gridY;
+				// Without VHGT (or its DATA flag) the engine leaves every vertex at the worldspace's
+				// default land height (-2048 without one): a flat plane that still grows grass.
+				if (!land.hasHeights) {
+					const auto* world = LandDataWorld(a_snapshot.worldsByFormID, *cell->worldFormID);
+					land.heights.fill(world ? world->defaultLandHeight : WorldInfo{}.defaultLandHeight);
+					land.hasHeights = true;
+				}
 			}
 		}
 
@@ -259,5 +266,23 @@ namespace FasterNGIO::GameData
 		SelectLands(snapshot, a_shards);
 		BucketPlacements(snapshot, a_shards);
 		return snapshot;
+	}
+
+	const WorldInfo* LandDataWorld(const std::unordered_map<FormID, WorldInfo, FormIDHash>& a_worlds, FormID a_world)
+	{
+		const auto it = a_worlds.find(a_world);
+		if (it == a_worlds.end()) {
+			return nullptr;
+		}
+		const WorldInfo* world = std::addressof(it->second);
+		// Bounded, in case a load order makes the parents a cycle.
+		for (int depth = 0; depth < 64 && world->UsesParentLandData(); ++depth) {
+			const auto parentIt = a_worlds.find(*world->parentWorldFormID);
+			if (parentIt == a_worlds.end()) {
+				break;
+			}
+			world = std::addressof(parentIt->second);
+		}
+		return world;
 	}
 }
