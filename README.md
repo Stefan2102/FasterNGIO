@@ -13,7 +13,7 @@ when the GPU cannot.
 
 -----
 
-The generation should take less than a minute.
+The generation should take less than a minute on vanilla, up to several minutes on large modlists with lots of worldspaces + seasons.
 
 # Details:
 ```
