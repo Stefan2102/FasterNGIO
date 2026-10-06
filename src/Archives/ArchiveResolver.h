@@ -45,7 +45,15 @@ namespace FasterNGIO::Archives
 		std::unordered_map<std::string, Location> _index;
 	};
 
-	// The vanilla archives (the default sResourceArchiveList and sResourceArchiveList2; the INIs are
-	// not read), then "<plugin>.bsa" and "<plugin> - Textures.bsa" for each plugin in load order.
-	[[nodiscard]] std::vector<std::string> DefaultArchiveOrder(std::span<const GameData::LoadOrderEntry> a_loadOrder);
+	// [Archive] sResourceArchiveList and sResourceArchiveList2 as the game's INIs set them (archive
+	// file names); a list the INIs leave out keeps the game's default.
+	struct ArchiveIniLists
+	{
+		std::optional<std::vector<std::string>> resourceArchiveList;
+		std::optional<std::vector<std::string>> resourceArchiveList2;
+	};
+
+	// sResourceArchiveList and sResourceArchiveList2 (the vanilla archives unless a_ini changes them),
+	// then "<plugin>.bsa" and "<plugin> - Textures.bsa" for each plugin in load order.
+	[[nodiscard]] std::vector<std::string> DefaultArchiveOrder(std::span<const GameData::LoadOrderEntry> a_loadOrder, const ArchiveIniLists& a_ini = {});
 }

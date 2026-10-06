@@ -300,6 +300,24 @@ TEST(Archives, ReadsArchivesAndPrefersLooseFiles)
 	EXPECT_EQ(std::string(box->begin(), box->end()), "loose");
 }
 
+TEST(Archives, LoadsTheArchivesTheIniListsName)
+{
+	const Install install;
+	WriteBytes(install.data / "Custom Grass.bsa", MakeArchive("meshes\\grass", "tuft.nif", "tuft"));
+	const auto loadOrder = install.LoadOrder();
+	EXPECT_FALSE(Archives::ArchiveResolver(install.data, Archives::DefaultArchiveOrder(loadOrder)).Read("meshes\\grass\\tuft.nif").has_value());
+
+	Archives::ArchiveIniLists ini;
+	ini.resourceArchiveList2 = std::vector<std::string>{ "Skyrim - Textures0.bsa", "Custom Grass.bsa" };
+	const auto order = Archives::DefaultArchiveOrder(loadOrder, ini);
+	// The default first list, the INI's second list, then the plugins' own archives.
+	EXPECT_EQ(order[0], "Skyrim - Misc.bsa");
+	EXPECT_EQ(order[7], "Skyrim - Textures0.bsa");
+	EXPECT_EQ(order[8], "Custom Grass.bsa");
+	EXPECT_GT(std::ranges::find(order, "Base.bsa") - order.begin(), 8);
+	EXPECT_TRUE(Archives::ArchiveResolver(install.data, order).Read("meshes\\grass\\tuft.nif").has_value());
+}
+
 TEST(DataDirectory, FindsNamesCaseInsensitively)
 {
 	const TempDirectory temp;

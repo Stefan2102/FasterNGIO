@@ -10,10 +10,10 @@ or CommonLibSSE.
 | Path | Contents |
 |---|---|
 | `src/GameData/` | Plugin (ESM/ESP/ESL) reading, in the order data flows: `LoadOrder` (plugins.txt, TES4 headers, FileIDs), `PluginParser` (one plugin's records into a `StaticPluginShard`), `StaticWorld` (overrides resolved into the `StaticWorldSnapshot`). `FormID.h` and `Records.h` hold the types, `Internal/` the file format (`RecordReader`) and the per-record extractors. Only the fields placement and rejection use are read. |
-| `src/Grass/` | Grass placement: `Placement.h` (settings, candidates, `GenerateCellCandidates`), `VanillaPlacement.cpp` (the engine's algorithm), `SmoothPlacement` (`SmoothWeightField` and smooth placement), `Internal/PlacementCommon.h` (terrain sampling, filters and blade encoding both share). `CellCache` turns placed blades into a cell's `.cgid` (`FinalizeCell`, file names); `NgioCacheWriter` is the format; `GameIni` the game's `[Grass]` INI settings; `LandTexture` which land textures the terrain shows where (NGIO's texture forms). |
+| `src/Grass/` | Grass placement: `Placement.h` (settings, candidates, `GenerateCellCandidates`), `VanillaPlacement.cpp` (the engine's algorithm), `SmoothPlacement` (`SmoothWeightField` and smooth placement), `Internal/PlacementCommon.h` (terrain sampling, filters and blade encoding both share). `CellCache` turns placed blades into a cell's `.cgid` (`FinalizeCell`: the engine's blocks and quadrant cap; file names); `GrassModels` measures each GRAS model's blades per block; `NgioCacheWriter` is the format; `GameIni` the game's `[Grass]` INI settings; `LandTexture` which land textures the terrain shows where (NGIO's texture forms). |
 | `src/Archives/` | Memory-mapped BSA (v103/104/105) reader and load-order-aware resolver (loose files win). |
 | `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows); `IniFile`; `GameInstall` (validates a game folder, detects the store build, derives plugins.txt and the INI folder); `ModOrganizer` (the MO2 instance and profile this process runs under); `UserSettings` (the launcher's remembered choices); the small shared helpers: `FileSystem` (per-user folders), `Text` (UTF-8 paths, ASCII case folding), `MappedFile`, `WholeFile`. |
-| `src/Collision/` | nifly-based Havok collision extraction (CMS, packed strips, convex hulls, boxes, spheres, capsules) into model space; on request, the render shapes' names and vertices (`NearestRenderShape`, for NGIO's shape-name filters), or (experimental `renderGeometry`) the visible render triangles in place of a model's collision. |
+| `src/Collision/` | nifly-based Havok collision extraction (CMS, packed strips, convex hulls, boxes, spheres, capsules) into model space; on request, the render shapes' names and vertices (`NearestRenderShape`, for NGIO's shape-name filters), or (experimental `renderGeometry`) the visible render triangles in place of a model's collision. `InstanceShape`: the triangle and vertex counts of the shape the engine instances grass from. |
 | `src/Rejection/` | NGIO query shapes (`RejectionConfig`), the per-world instance index (`WorldIndex`), the CPU BVH fallback (`CpuBvh`), the brute-force reference (`CpuReference`), and `Bounds` (AABBs and primitive kinds, shared with the GPU). `RejectionFeatures` holds NGIO's resolved lists and objects; `NgioRules` the per-blade decision (ignored shapes, grass cliffs) that every backend feeds. |
 | `src/Seasons/` | Seasons of Skyrim's swap types and the automatic winter swaps (`SeasonSwaps`). |
 | `src/Gpu/` | `GpuRejector`: feature check, the render thread (OpenRenderGraph `PersistentGraphHost`), BLAS/TLAS, ray-tracing pipeline, one DispatchRays per frame, readback. `ModelPacking` lays collision out for the shader (in Core, so it is testable without a GPU); `GpuShaders` loads the shader library. |
@@ -80,17 +80,33 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   before taking each one (so the default of 2 takes 3; confirmed in the disassembly), SARP stops at
   `max`. The bytes differ in each blade's rotation words: SARP's layout suited its own renderer, while
   FasterNGIO writes the one the game's grass vertex shader reads (`EncodeBlade`; tested in
-  `PlacementTests`' `BladeEncoding`). Vanilla changes must preserve the engine's RNG draw order. Linux output (both placements)
+  `PlacementTests`' `BladeEncoding`), and in the block layout (see "Blocks are the engine's"). Vanilla changes must preserve the engine's RNG draw order. Linux output (both placements)
   must stay byte-identical to Windows output.
 - **Game settings.** Only settings that change placement are read: `iMinGrassSize`,
   `iMaxGrassTypesPerTexure`, `fTexturePctThreshold`, all in the engine's Skyrim.ini collection, which
   loads `Skyrim.ini` then `SkyrimCustom.ini` (`SkyrimPrefs.ini` feeds only the prefs collection). The
   engine reads them through the Win32 profile API: first occurrence of a key wins, values parse as
-  their leading number. Engine defaults, then INIs, then command-line values.
+  their leading number. Engine defaults, then INIs, then command-line values. The same collection's
+  `[Archive] sResourceArchiveList`/`sResourceArchiveList2` lead the archive order (`ReadArchiveIniLists`,
+  `DefaultArchiveOrder`), since mods register BSAs there.
 - **Smooth placement is seam-free and calibrated.** Weights merge every shared vertex (quadrants and
   cells), blades read them at their own position, and the per-type density scale is computed over the
   whole worldspace, never the selected cells, so a cell is identical whatever a run selects. Judge
   placement changes with `tools/analyze_placement_edges.py` against vanilla and the null control.
+- **Blocks are the engine's.** The game reads each `.cgid` block into a fixed 256 KiB scratch buffer
+  without checking its size (76339), so an oversized block corrupts the heap (seen as tbbmalloc crashes
+  under Engine Fixes). `FinalizeCell` lays blocks out as the engine's generator does: per grass type
+  and quadrant (`BladeCandidate::quadrant`: vanilla's generating quadrant, smooth's by position), split
+  into the model's instances per group (`BladesPerBlock`: `min(0xFFFF / (3 * tris), 0xFFFF / verts)`
+  of the root's first child, measured once per run by `Grass::MeasureGrassModels`, at most 8192), with
+  `AddGroup`'s descriptor (center and half extents of the stored positions, padded by 30). By default a
+  type keeps at most 8191 blades per quadrant, the engine's `AddInstances` limit, thinned evenly rather
+  than dropping the last batches (`--no-blade-cap`, the launcher's advanced checkbox, turns it off).
+- **Grass the game cannot load is not placed.** When a GRAS model is in no loose file or archive,
+  `LoadGrassType` returns null: generation skips the type (no RNG draws), and loading a cache skips its
+  group header but not its blocks, misreading the rest of the file. `MeasureGrassModels` lists those
+  types (`missingGrass`); `PlacementSettings::unloadableGrass` makes `ForEachTextureGrass` count them
+  against `iMaxGrassTypesPerTexure` without visiting them, exactly like a GRAS without a model.
 - **Rejection is a post-filter.** NGIO's own hook skips the colour/orientation/height RNG draws for a
   rejected blade; FasterNGIO deliberately keeps the vanilla layout and only drops blades, or (grass
   cliffs) moves them: `Grass::MoveBlade` re-encodes a blade from the draws `BladeCandidate` keeps.

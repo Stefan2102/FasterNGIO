@@ -26,6 +26,8 @@ namespace FasterNGIO::Gui
 		bool overwrite{ false };
 		// GenerateOptions::skipEmptyCells.
 		bool skipEmptyCells{ true };
+		// GenerateOptions::capQuadrantBlades.
+		bool capQuadrantBlades{ true };
 		// Experimental: GenerateOptions::renderGeometry.
 		bool renderGeometry{ false };
 		App::SeasonsChoice seasons{ App::SeasonsChoice::Auto };

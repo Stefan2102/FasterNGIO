@@ -1,5 +1,7 @@
 #include "Grass/CellCache.h"
 
+#include "Grass/Internal/PlacementCommon.h"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -11,36 +13,115 @@
 
 namespace FasterNGIO::Grass
 {
-	NgioCellCache FinalizeCell(const CellCandidates& a_candidates, std::span<const std::uint32_t> a_rejected)
+	namespace
 	{
-		struct GroupBuild
-		{
-			std::vector<std::uint16_t> bladeWords;
-			float min[3]{ (std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)() };
-			float max[3]{ -(std::numeric_limits<float>::max)(), -(std::numeric_limits<float>::max)(), -(std::numeric_limits<float>::max)() };
-		};
+		constexpr std::size_t kQuadrants = GameData::LandInfo::QuadrantCount;
 
-		std::vector<GroupBuild> builds(a_candidates.groups.size());
+		// Keeps a_keep of a_blades, evenly spaced through placement order (so through the quadrant's
+		// patches): blade k stays when floor((k + 1) * keep / n) steps past floor(k * keep / n).
+		void ThinEvenly(std::vector<std::uint32_t>& a_blades, std::uint32_t a_keep)
+		{
+			const auto count = static_cast<std::uint64_t>(a_blades.size());
+			std::size_t kept = 0;
+			for (std::uint64_t k = 0; k < count; ++k) {
+				if ((k + 1) * a_keep / count != k * a_keep / count) {
+					a_blades[kept++] = a_blades[static_cast<std::size_t>(k)];
+				}
+			}
+			a_blades.resize(kept);
+		}
+
+		// One block, with the descriptor BSMultiStreamInstanceTriShape::AddGroup computes: the bounds of
+		// the stored half-float positions (x and y offset by the cache block's corner, the shape's
+		// origin), padded by 30 units, as center and half extents; then the triangle count, the blade
+		// count and the words per blade. The engine's triangle count is the shape's meshTriCount, which
+		// its constructor never sets, times the blade count; it is only stored, so 0 is written.
+		// Comparisons and arithmetic follow the engine's SSE code, so the floats come out identical.
+		NgioGrassGeometryBlock MakeBlock(const CellCandidates& a_candidates, std::span<const std::uint32_t> a_blades)
+		{
+			constexpr float kPad = 30.0f;
+			const auto baseX = Internal::BlockBase(a_candidates.cellX);
+			const auto baseY = Internal::BlockBase(a_candidates.cellY);
+			float lo[3]{ (std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)(), (std::numeric_limits<float>::max)() };
+			float hi[3]{ -(std::numeric_limits<float>::max)(), -(std::numeric_limits<float>::max)(), -(std::numeric_limits<float>::max)() };
+			NgioGrassGeometryBlock block;
+			block.payloadWords.reserve(a_blades.size() * kBladeWords);
+			for (const auto index : a_blades) {
+				const auto& words = a_candidates.blades[index].words;
+				block.payloadWords.insert(block.payloadWords.end(), words.begin(), words.end());
+				const auto x = Internal::HalfBitsToFloat(words[0]) + baseX;
+				const auto y = Internal::HalfBitsToFloat(words[1]) + baseY;
+				const auto z = Internal::HalfBitsToFloat(words[2]);
+				// minss/maxss keep the running value on ties; the z tests (comiss) take the new one.
+				lo[0] = x < lo[0] ? x : lo[0];
+				hi[0] = x > hi[0] ? x : hi[0];
+				lo[1] = y < lo[1] ? y : lo[1];
+				hi[1] = y > hi[1] ? y : hi[1];
+				lo[2] = lo[2] < z ? lo[2] : z;
+				hi[2] = hi[2] > z ? hi[2] : z;
+			}
+			std::array<float, 3> center{};
+			std::array<float, 3> extent{};
+			for (std::size_t axis = 0; axis < 3; ++axis) {
+				const float min = lo[axis] - kPad;
+				const float max = hi[axis] + kPad;
+				const float half = (max - min) * 0.5f;
+				center[axis] = min + half;
+				extent[axis] = max - center[axis];
+			}
+			block.descriptorWords = {
+				std::bit_cast<std::uint32_t>(center[0]),
+				std::bit_cast<std::uint32_t>(center[1]),
+				std::bit_cast<std::uint32_t>(center[2]),
+				std::bit_cast<std::uint32_t>(extent[0]),
+				std::bit_cast<std::uint32_t>(extent[1]),
+				std::bit_cast<std::uint32_t>(extent[2]),
+				0u,
+				static_cast<std::uint32_t>(a_blades.size()),
+				kBladeWords,
+			};
+			return block;
+		}
+	}
+
+	std::uint32_t BladesPerBlock(std::uint32_t a_triangles, std::uint32_t a_vertices)
+	{
+		// The engine reads both counts as 16-bit fields of the shape.
+		const auto triangles = a_triangles & 0xFFFFu;
+		const auto vertices = a_vertices & 0xFFFFu;
+		if (triangles == 0 || vertices == 0) {
+			return kMaxBladesPerBlock;
+		}
+		const auto blades = (std::min)(0xFFFFu / (3u * triangles), 0xFFFFu / vertices);
+		return std::clamp(blades, 1u, kMaxBladesPerBlock);
+	}
+
+	FinalizedCell FinalizeCell(const CellCandidates& a_candidates, std::span<const std::uint32_t> a_rejected, const BlockLayout& a_layout)
+	{
+		// The surviving blades of each group and quadrant, in placement order.
+		std::vector<std::vector<std::uint32_t>> kept(a_candidates.groups.size() * kQuadrants);
 		for (std::size_t i = 0; i < a_candidates.blades.size(); ++i) {
 			if (!a_rejected.empty() && (a_rejected[i / 32] & (1u << (i % 32))) != 0) {
 				continue;
 			}
 			const auto& blade = a_candidates.blades[i];
-			auto& build = builds[blade.groupIndex];
-			const auto& grass = *a_candidates.groups[blade.groupIndex].grass;
-			build.bladeWords.insert(build.bladeWords.end(), blade.words.begin(), blade.words.end());
-			for (int axis = 0; axis < 2; ++axis) {
-				build.min[axis] = (std::min)(build.min[axis], blade.position[axis]);
-				build.max[axis] = (std::max)(build.max[axis], blade.position[axis]);
+			kept[blade.groupIndex * kQuadrants + blade.quadrant].push_back(static_cast<std::uint32_t>(i));
+		}
+
+		FinalizedCell result;
+		if (a_layout.capQuadrantBlades) {
+			for (auto& blades : kept) {
+				if (blades.size() > kMaxBladesPerQuadrant) {
+					result.bladesCapped += static_cast<std::uint32_t>(blades.size() - kMaxBladesPerQuadrant);
+					ThinEvenly(blades, kMaxBladesPerQuadrant);
+				}
 			}
-			// Bounds reach the top of the tallest blade (at least a unit above the ground).
-			build.min[2] = (std::min)(build.min[2], blade.position[2]);
-			build.max[2] = (std::max)(build.max[2], blade.position[2] + (std::max)(grass.heightRange, 1.0f));
 		}
 
 		std::vector<std::uint32_t> order;
-		for (std::uint32_t i = 0; i < builds.size(); ++i) {
-			if (!builds[i].bladeWords.empty()) {
+		for (std::uint32_t i = 0; i < a_candidates.groups.size(); ++i) {
+			const auto first = kept.begin() + static_cast<std::ptrdiff_t>(i * kQuadrants);
+			if (std::any_of(first, first + kQuadrants, [](const std::vector<std::uint32_t>& a_blades) { return !a_blades.empty(); })) {
 				order.push_back(i);
 			}
 		}
@@ -48,10 +129,8 @@ namespace FasterNGIO::Grass
 			return a_candidates.groups[lhs].grass->formID < a_candidates.groups[rhs].grass->formID;
 		});
 
-		NgioCellCache cache;
 		for (const auto index : order) {
 			const auto& source = a_candidates.groups[index];
-			auto& build = builds[index];
 			NgioGrassGroup group;
 			group.modelPath = source.modelPath;
 			group.grassFormID = source.grass->formID.value;
@@ -59,24 +138,21 @@ namespace FasterNGIO::Grass
 			group.vertexLighting = source.grass->HasVertexLighting();
 			group.uniformScaling = source.grass->HasUniformScaling();
 			group.fitToSlope = source.grass->FitsToSlope();
-			NgioGrassGeometryBlock block;
-			const auto bladeCount = static_cast<std::uint32_t>(build.bladeWords.size() / kBladeWords);
-			block.descriptorWords = {
-				std::bit_cast<std::uint32_t>(build.min[0]),
-				std::bit_cast<std::uint32_t>(build.min[1]),
-				std::bit_cast<std::uint32_t>(build.min[2]),
-				std::bit_cast<std::uint32_t>(build.max[0]),
-				std::bit_cast<std::uint32_t>(build.max[1]),
-				std::bit_cast<std::uint32_t>(build.max[2]),
-				0u,
-				bladeCount,
-				kBladeWords,
-			};
-			block.payloadWords = std::move(build.bladeWords);
-			group.blocks.push_back(std::move(block));
-			cache.groups.push_back(std::move(group));
+			auto perBlock = kMaxBladesPerBlock;
+			if (a_layout.bladesPerBlock) {
+				if (const auto it = a_layout.bladesPerBlock->find(source.grass->formID); it != a_layout.bladesPerBlock->end()) {
+					perBlock = it->second;
+				}
+			}
+			for (std::size_t quadrant = 0; quadrant < kQuadrants; ++quadrant) {
+				const std::span<const std::uint32_t> blades = kept[index * kQuadrants + quadrant];
+				for (std::size_t start = 0; start < blades.size(); start += perBlock) {
+					group.blocks.push_back(MakeBlock(a_candidates, blades.subspan(start, (std::min)(blades.size() - start, static_cast<std::size_t>(perBlock)))));
+				}
+			}
+			result.cache.groups.push_back(std::move(group));
 		}
-		return cache;
+		return result;
 	}
 
 	std::string MakeNgioCacheFileName(std::string_view a_worldEditorID, std::int32_t a_cellX, std::int32_t a_cellY)

@@ -47,6 +47,22 @@ TEST(GameIni, ReadsSkyrimIniThenSkyrimCustomIniButNotPrefs)
 	EXPECT_FLOAT_EQ(settings.alphaThreshold, 0.25f);
 }
 
+TEST(GameIni, ReadsTheArchiveLists)
+{
+	TempDirectory directory;
+	WriteText(directory.Path() / "Skyrim.ini", "[Archive]\nsResourceArchiveList2=Skyrim - Patch.bsa,  Custom Grass.bsa ,,Other.bsa\n");
+	WriteText(directory.Path() / "SkyrimCustom.ini", "[Archive]\nsResourceArchiveList=Skyrim - Meshes0.bsa\n");
+	const auto lists = Grass::ReadArchiveIniLists(directory.Path());
+	ASSERT_TRUE(lists.resourceArchiveList && lists.resourceArchiveList2);
+	EXPECT_EQ(*lists.resourceArchiveList, (std::vector<std::string>{ "Skyrim - Meshes0.bsa" }));
+	EXPECT_EQ(*lists.resourceArchiveList2, (std::vector<std::string>{ "Skyrim - Patch.bsa", "Custom Grass.bsa", "Other.bsa" }));
+
+	TempDirectory empty;
+	WriteText(empty.Path() / "Skyrim.ini", "[Grass]\niMinGrassSize=40\n");
+	const auto none = Grass::ReadArchiveIniLists(empty.Path());
+	EXPECT_FALSE(none.resourceArchiveList || none.resourceArchiveList2);
+}
+
 TEST(GameIni, LeavesUnsetKeysAtEngineDefaults)
 {
 	TempDirectory directory;

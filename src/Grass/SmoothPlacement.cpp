@@ -328,7 +328,9 @@ namespace FasterNGIO::Grass
 					if (accept >= density * coverageOf(weight)) {
 						continue;
 					}
-					EmitBlade(result, groupIndex, a_land, grass, x, y, waterHeight, [&] { return rng.Signed(); });
+					constexpr float kHalfCell = GameData::kSkyrimTerrainCellSize * 0.5f;
+					const auto quadrant = static_cast<std::uint8_t>((x - cellOriginX >= kHalfCell ? 1u : 0u) | (y - cellOriginY >= kHalfCell ? 2u : 0u));
+					EmitBlade(result, groupIndex, quadrant, a_land, grass, x, y, waterHeight, [&] { return rng.Signed(); });
 				}
 			}
 		}
@@ -349,7 +351,7 @@ namespace FasterNGIO::Grass
 			}
 			std::vector<std::size_t> indices;
 			if (const auto* texture = GrassListTexture(a_snapshot, a_settings, a_texture)) {
-				ForEachTextureGrass(a_snapshot, *texture, a_settings.maxGrassTypesPerTexture, [&](const GameData::GrassInfo& a_grass) {
+				ForEachTextureGrass(a_snapshot, *texture, a_settings, [&](const GameData::GrassInfo& a_grass) {
 					const auto [gridIt, inserted] = gridByGrass.try_emplace(a_grass.formID, grids.size());
 					if (inserted) {
 						grids.push_back(SmoothWeightField::Grid{ .grass = std::addressof(a_grass) });

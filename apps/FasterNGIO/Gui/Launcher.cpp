@@ -413,6 +413,7 @@ namespace FasterNGIO::Gui
 				options.rejectionChosen = true;
 				options.overwrite = _inputs.overwrite;
 				options.skipEmptyCells = _inputs.skipEmptyCells;
+				options.capQuadrantBlades = _inputs.capQuadrantBlades;
 				options.renderGeometry = _inputs.renderGeometry;
 				options.seasons = _inputs.seasons;
 				options.gameIniDirectory = IniFolder();
@@ -723,6 +724,12 @@ namespace FasterNGIO::Gui
 					ImGui::Checkbox("Skip writing empty cache files", &_inputs.skipEmptyCells);
 					if (ImGui::IsItemHovered()) {
 						ImGui::SetTooltip("Cells left with no grass get no .cgid file instead of a 4-byte empty one.");
+					}
+					ImGui::Checkbox("Limit grass to the game's 8191 blades per type and cell quadrant", &_inputs.capQuadrantBlades);
+					if (ImGui::IsItemHovered()) {
+						ImGui::SetTooltip(
+							"The game keeps at most 8191 blades of one grass type in a quarter of a cell when it generates\n"
+							"grass. With this on, denser grass is thinned evenly to that limit; off, every blade is kept.");
 					}
 					ImGui::TreePop();
 				}

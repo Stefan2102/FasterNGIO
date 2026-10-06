@@ -1,3 +1,4 @@
+#include "Collision/InstanceShape.h"
 #include "Collision/NifCollisionExtractor.h"
 
 #include <NifFile.hpp>
@@ -109,4 +110,25 @@ TEST(Collision, RenderGeometryRespectsTheLayerMask)
 	const auto model = Collision::ExtractCollision(MakeNif(true), RenderGeometry(1u << 4));
 	EXPECT_EQ(model.status, Collision::ExtractionStatus::FilteredOut);
 	EXPECT_TRUE(model.triangles.empty());
+}
+
+TEST(Collision, InstanceShapeIsTheRootsFirstChild)
+{
+	// The first cube: 12 triangles over 8 vertices.
+	const auto counts = Collision::ReadInstanceShapeCounts(MakeNif(false));
+	ASSERT_TRUE(counts.has_value());
+	EXPECT_EQ(counts->triangles, 12u);
+	EXPECT_EQ(counts->vertices, 8u);
+}
+
+TEST(Collision, InstanceShapeNeedsAChildShape)
+{
+	nifly::NifFile nif;
+	nif.Create(nifly::NiVersion::getSSE());
+	std::ostringstream stream(std::ios::binary);
+	ASSERT_EQ(nif.Save(stream), 0);
+	const auto bytes = stream.str();
+	EXPECT_FALSE(Collision::ReadInstanceShapeCounts(std::vector<std::uint8_t>(bytes.begin(), bytes.end())).has_value());
+	const std::vector<std::uint8_t> garbage{ 1, 2, 3 };
+	EXPECT_FALSE(Collision::ReadInstanceShapeCounts(garbage).has_value());
 }

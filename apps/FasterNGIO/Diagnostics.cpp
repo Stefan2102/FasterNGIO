@@ -5,6 +5,7 @@
 #include "Collision/NifCollisionExtractor.h"
 #include "Collision/ObjExport.h"
 #include "Concurrency/AtomicWait.h"
+#include "Grass/GrassModels.h"
 #include "Rejection/CpuBvh.h"
 
 #include <oneapi/tbb/parallel_for.h>
@@ -20,6 +21,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -405,9 +407,12 @@ namespace FasterNGIO::App
 		if (a_options.collisionSurvey) {
 			return CollisionSurvey(a_options, a_plugins);
 		}
-		// Export and benchmark place grass as generation would.
+		// Export and benchmark place grass as generation would, without the types whose model is missing.
 		const auto lands = SelectLands(a_plugins.snapshot, a_options.worlds.front(), a_options);
-		const auto placement = PrepareWorldPlacement(a_plugins.snapshot, a_options.worlds.front(), ResolvePlacementSettings(a_options));
+		const auto grassModels = Grass::MeasureGrassModels(a_plugins.snapshot, MakeResolver(a_options, a_plugins));
+		auto settings = ResolvePlacementSettings(a_options);
+		settings.unloadableGrass = std::addressof(grassModels.missingGrass);
+		const auto placement = PrepareWorldPlacement(a_plugins.snapshot, a_options.worlds.front(), settings);
 		if (!a_options.exportBladesPath.empty()) {
 			return ExportBlades(a_options, placement.settings, a_plugins.snapshot, lands);
 		}

@@ -6,6 +6,7 @@
 #include "WorldSetup.h"
 
 #include "Grass/CellCache.h"
+#include "Grass/GrassModels.h"
 #include "Grass/LandTexture.h"
 #include "Pipeline/CellPipeline.h"
 #include "Pipeline/FileWriterPool.h"
@@ -24,6 +25,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -68,7 +70,9 @@ namespace FasterNGIO::App
 			const ResolvedSeasons& seasons;
 			// The caches in the output folder when the run started (see ListExistingCaches).
 			const std::unordered_set<std::string>* existingFiles{ nullptr };
-			// Opened for the first world with rejection, then shared (read-only).
+			// Each grass type's blades per cache block, from its model.
+			const Grass::GrassModelLayout& grassModels;
+			// Opened before the first world (grass models, then collision), shared read-only.
 			std::optional<Archives::ArchiveResolver> resolver{};
 			// Set when the GPU turned out to be unsupported, so later worlds go straight to the CPU BVH.
 			bool gpuUnavailable{ false };
@@ -119,9 +123,6 @@ namespace FasterNGIO::App
 #endif
 			spdlog::info("rejection: {}", rejection.backend == RejectionBackend::Gpu ? "GPU" : "CPU BVH");
 
-			if (!a_shared.resolver) {
-				a_shared.resolver.emplace(MakeResolver(options, a_shared.plugins));
-			}
 			rejection.index = BuildWorldIndex(a_shared.plugins.snapshot, a_worldFormID, *a_shared.resolver, a_features, a_shared.shapes.maxReach);
 			ThrowIfStopped(a_shared.control);
 			if (rejection.backend == RejectionBackend::Cpu) {
@@ -155,10 +156,11 @@ namespace FasterNGIO::App
 			if (a_shared.options.validateCpu) {
 				spdlog::info("validation: {} blade(s) differ from the brute-force CPU reference", a_stats.validationMismatches);
 			}
-			spdlog::info("generated {} file(s), skipped {}, empty {}, failed {}, blades={} rejected={}{} in {:.2f}s (total {:.2f}s, {} file(s) still queued)", a_stats.cellsWritten,
-				a_stats.cellsSkipped, a_stats.cellsEmpty, a_stats.cellsFailed, a_stats.blades, a_stats.bladesRejected,
-				a_stats.bladesMoved ? std::format(" moved onto cliffs={}", a_stats.bladesMoved) : std::string{}, SecondsSince(a_generationBegin), SecondsSince(a_shared.begin),
-				a_shared.writer.PendingFiles());
+			spdlog::info("generated {} file(s), skipped {}, empty {}, failed {}, blades={} rejected={}{}{} in {:.2f}s (total {:.2f}s, {} file(s) still queued)",
+				a_stats.cellsWritten, a_stats.cellsSkipped, a_stats.cellsEmpty, a_stats.cellsFailed, a_stats.blades, a_stats.bladesRejected,
+				a_stats.bladesMoved ? std::format(" moved onto cliffs={}", a_stats.bladesMoved) : std::string{},
+				a_stats.bladesCapped ? std::format(" over the quadrant cap={}", a_stats.bladesCapped) : std::string{}, SecondsSince(a_generationBegin),
+				SecondsSince(a_shared.begin), a_shared.writer.PendingFiles());
 		}
 
 		struct WorldResult
@@ -186,6 +188,29 @@ namespace FasterNGIO::App
 			return names;
 		}
 
+		// Every GRAS model's blades per cache block (the engine's instances per group) and the grass types
+		// whose model is missing, logged.
+		Grass::GrassModelLayout LoadGrassModels(const GameData::StaticWorldSnapshot& a_snapshot, const Archives::ArchiveResolver& a_resolver)
+		{
+			const auto begin = std::chrono::steady_clock::now();
+			auto layout = Grass::MeasureGrassModels(a_snapshot, a_resolver);
+			spdlog::info("grass models: {} model(s) for {} grass type(s) in {:.2f}s", layout.models, layout.bladesPerBlock.size(), SecondsSince(begin));
+			const auto warn = [](const std::vector<std::string>& a_paths, std::string_view a_problem, std::string_view a_consequence) {
+				if (a_paths.empty()) {
+					return;
+				}
+				spdlog::warn("{} grass model(s) {}; {}: {}{}", a_paths.size(), a_problem, a_consequence, a_paths.front(),
+					a_paths.size() > 1 ? std::format(" and {} more", a_paths.size() - 1) : std::string{});
+				for (const auto& path : a_paths) {
+					spdlog::debug("grass model {}: {}", a_problem, path);
+				}
+			};
+			warn(layout.missing, "not found in the loose files or archives",
+				std::format("the game cannot load them, so their {} grass type(s) are not placed", layout.missingGrass.size()));
+			warn(layout.unsupported, "without a BSTriShape as the root's first child", std::format("their cache blocks hold up to {} blades", Grass::kMaxBladesPerBlock));
+			return layout;
+		}
+
 		void Accumulate(Pipeline::CellPipelineStats& a_total, const Pipeline::CellPipelineStats& a_pass)
 		{
 			a_total.cellsWritten += a_pass.cellsWritten;
@@ -197,6 +222,7 @@ namespace FasterNGIO::App
 			a_total.bladesRejected += a_pass.bladesRejected;
 			a_total.validationMismatches += a_pass.validationMismatches;
 			a_total.bladesMoved += a_pass.bladesMoved;
+			a_total.bladesCapped += a_pass.bladesCapped;
 		}
 
 		[[nodiscard]] std::string DescribePass(const SeasonPass& a_pass)
@@ -279,6 +305,7 @@ namespace FasterNGIO::App
 				pipeline.outputDirectory = options.outputDirectory;
 				pipeline.fileSuffixes = pass.suffixes;
 				pipeline.placement = placement.settings;
+				pipeline.blockLayout = Grass::BlockLayout{ .bladesPerBlock = std::addressof(a_shared.grassModels.bladesPerBlock), .capQuadrantBlades = options.capQuadrantBlades };
 				pipeline.overwrite = options.overwrite;
 				pipeline.skipEmpty = options.skipEmptyCells;
 				pipeline.existingFiles = a_shared.existingFiles;
@@ -445,8 +472,13 @@ namespace FasterNGIO::App
 			}
 
 			const auto worlds = SelectWorlds(options, plugins.snapshot);
-			const auto placement = ResolvePlacementSettings(options);
+			auto placement = ResolvePlacementSettings(options);
 			const auto shapes = MakeQueryShapes(plugins.snapshot, options.rejectionConfig);
+			std::optional<Archives::ArchiveResolver> resolver;
+			resolver.emplace(MakeResolver(options, plugins));
+			const auto grassModels = LoadGrassModels(plugins.snapshot, *resolver);
+			placement.unloadableGrass = std::addressof(grassModels.missingGrass);
+			ThrowIfStopped(a_control);
 			writer.emplace(options.writerThreads, kMaxPendingWriteBytes);
 			std::optional<std::unordered_set<std::string>> existingFiles;
 			if (options.skipEmptyCells && options.overwrite) {
@@ -462,6 +494,8 @@ namespace FasterNGIO::App
 				.writer = *writer,
 				.seasons = seasons,
 				.existingFiles = existingFiles ? std::addressof(*existingFiles) : nullptr,
+				.grassModels = grassModels,
+				.resolver = std::move(resolver),
 			};
 			if (a_control.progress) {
 				a_control.progress->worldCount.store(static_cast<std::uint32_t>(worlds.size()), std::memory_order_relaxed);

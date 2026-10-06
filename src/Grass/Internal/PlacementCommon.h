@@ -116,9 +116,11 @@ namespace FasterNGIO::Grass::Internal
 
 	// The grass types the engine takes from a land texture, in GNAM order: only GNAMs that resolve
 	// to a GRAS count, and the list ends once the count exceeds iMaxGrassTypesPerTexure (the
-	// engine tests `count > max` before taking each one), so the default of 2 yields 3 types.
+	// engine tests `count > max` before taking each one), so the default of 2 yields 3 types. Types
+	// whose model is empty or cannot be loaded count but are not visited: the engine places nothing
+	// for them.
 	template <class Visit>
-	void ForEachTextureGrass(const GameData::StaticWorldSnapshot& a_snapshot, const GameData::LandTextureInfo& a_texture, std::uint32_t a_maxTypes,
+	void ForEachTextureGrass(const GameData::StaticWorldSnapshot& a_snapshot, const GameData::LandTextureInfo& a_texture, const PlacementSettings& a_settings,
 		Visit&& a_visit)
 	{
 		std::uint32_t used = 0;
@@ -127,11 +129,11 @@ namespace FasterNGIO::Grass::Internal
 			if (grassIt == a_snapshot.grassesByFormID.end()) {
 				continue;
 			}
-			if (used > a_maxTypes) {
+			if (used > a_settings.maxGrassTypesPerTexture) {
 				break;
 			}
 			++used;
-			if (!grassIt->second.modelPath.empty()) {
+			if (!grassIt->second.modelPath.empty() && !(a_settings.unloadableGrass && a_settings.unloadableGrass->contains(grassFormID))) {
 				a_visit(grassIt->second);
 			}
 		}
@@ -152,9 +154,9 @@ namespace FasterNGIO::Grass::Internal
 	// What follows once a blade's position is accepted, in both placements: snap it to the cache's
 	// half-float grid, sample the terrain, apply the water and slope filters, then draw colour,
 	// orientation and height (in that order) from a_signedRandom, a value in [-1, 1), and append the
-	// blade.
+	// blade under a_quadrant.
 	template <class SignedRandom>
-	void EmitBlade(CellCandidates& a_cell, std::uint32_t a_groupIndex, const LandInfo& a_land, const GameData::GrassInfo& a_grass, float a_x, float a_y,
+	void EmitBlade(CellCandidates& a_cell, std::uint32_t a_groupIndex, std::uint8_t a_quadrant, const LandInfo& a_land, const GameData::GrassInfo& a_grass, float a_x, float a_y,
 		std::optional<float> a_waterHeight, SignedRandom&& a_signedRandom)
 	{
 		const auto x = QuantizeToBlock(a_x, BlockBase(a_cell.cellX));
@@ -174,6 +176,7 @@ namespace FasterNGIO::Grass::Internal
 		const auto heightRandom = a_signedRandom();
 		auto& blade = a_cell.blades.emplace_back();
 		blade.groupIndex = a_groupIndex;
+		blade.quadrant = a_quadrant;
 		EncodeBlade(blade, a_cell.cellX, a_cell.cellY, x, y, terrain, a_grass, brightness, orientation, heightRandom, a_grass.FitsToSlope());
 	}
 

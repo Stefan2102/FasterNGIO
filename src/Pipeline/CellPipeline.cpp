@@ -197,6 +197,7 @@ namespace FasterNGIO::Pipeline
 				stats.bladesRejected = _rejected.load();
 				stats.validationMismatches = _mismatches.load();
 				stats.bladesMoved = _moved.load();
+				stats.bladesCapped = _capped.load();
 				return stats;
 			}
 
@@ -451,7 +452,11 @@ namespace FasterNGIO::Pipeline
 					ApplyGrassFilters(work);
 					_rejected.fetch_add(CountBits(work.rejected));
 					_blades.fetch_add(work.candidates.blades.size());
-					const auto cache = Grass::FinalizeCell(work.candidates, work.rejected);
+					const auto finalized = Grass::FinalizeCell(work.candidates, work.rejected, _desc.blockLayout);
+					const auto& cache = finalized.cache;
+					if (finalized.bladesCapped != 0) {
+						_capped.fetch_add(finalized.bladesCapped);
+					}
 					const auto names = _desc.fileSuffixes.size();
 					if (_desc.skipEmpty && cache.groups.empty()) {
 						// A cache left from an earlier run would otherwise still place grass here.
@@ -664,6 +669,7 @@ namespace FasterNGIO::Pipeline
 			std::atomic<std::uint64_t> _rejected{ 0 };
 			std::atomic<std::uint64_t> _mismatches{ 0 };
 			std::atomic<std::uint64_t> _moved{ 0 };
+			std::atomic<std::uint64_t> _capped{ 0 };
 		};
 	}
 

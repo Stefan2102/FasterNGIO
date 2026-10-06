@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Archives/ArchiveResolver.h"
 #include "Platform/GameInstall.h"
 
 #include <cstdint>
@@ -52,4 +53,8 @@ namespace FasterNGIO::Grass
 	[[nodiscard]] GrassIniSettings ReadGrassIniSettings(const std::filesystem::path& a_directory);
 
 	void ApplyGrassIniSettings(const GrassIniSettings& a_ini, PlacementSettings& a_settings);
+
+	// [Archive] sResourceArchiveList and sResourceArchiveList2 from the same files, in the same order:
+	// the archives the game loads before the plugins' own, which grass models may come from.
+	[[nodiscard]] Archives::ArchiveIniLists ReadArchiveIniLists(const std::filesystem::path& a_directory);
 }

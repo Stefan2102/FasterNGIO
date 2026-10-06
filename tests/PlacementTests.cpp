@@ -86,6 +86,35 @@ TEST(VanillaPlacement, TakesOneMoreGrassTypePerTextureThanTheIniMaximum)
 	EXPECT_EQ(cell.groups[2].grass->formID.value, 0x103u);
 }
 
+TEST(VanillaPlacement, CountsButSkipsGrassWhoseModelCannotLoad)
+{
+	World world;
+	auto& texture = world.snapshot.landTexturesByFormID.at(kGrassTexture);
+	texture.grassFormIDs = { FormID{ 0x101 }, FormID{ 0x102 }, FormID{ 0x103 }, FormID{ 0x104 } };
+	for (std::uint32_t id = 0x101; id <= 0x104; ++id) {
+		world.snapshot.grassesByFormID.emplace(FormID{ id }, MakeGrass(id, 20));
+	}
+	Grass::PlacementSettings settings;
+	settings.maxGrassTypesPerTexture = 2;
+	const std::unordered_set<FormID, GameData::FormIDHash> unloadable{ FormID{ 0x102 } };
+	settings.unloadableGrass = &unloadable;
+	const auto cell = Grass::GenerateCellCandidates(world.snapshot, world.land, settings);
+	// 0x102 still takes one of the three places, so 0x104 is not reached.
+	ASSERT_EQ(cell.groups.size(), 2u);
+	EXPECT_EQ(cell.groups[0].grass->formID.value, 0x101u);
+	EXPECT_EQ(cell.groups[1].grass->formID.value, 0x103u);
+
+	// Exactly as for a GRAS without a model: no blades and no RNG draws for it.
+	auto noModel = world;
+	noModel.snapshot.grassesByFormID.at(FormID{ 0x102 }).modelPath.clear();
+	settings.unloadableGrass = nullptr;
+	const auto reference = Grass::GenerateCellCandidates(noModel.snapshot, noModel.land, settings);
+	ASSERT_EQ(reference.blades.size(), cell.blades.size());
+	for (std::size_t i = 0; i < cell.blades.size(); ++i) {
+		EXPECT_EQ(reference.blades[i].words, cell.blades[i].words);
+	}
+}
+
 TEST(VanillaPlacement, GrowsTheSeasonsSwappedGrassList)
 {
 	World world;

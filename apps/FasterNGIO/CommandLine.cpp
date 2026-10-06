@@ -106,6 +106,8 @@ namespace FasterNGIO::App
 			"                                serialized by NTFS and antivirus scanning; faster filesystems may take more)\n"
 			"  --overwrite                   Rebuild cache files that already exist\n"
 			"  --write-empty-cells           Also write a cache file for cells with no grass (by default they get none)\n"
+			"  --no-blade-cap                Keep more than the game's 8191 blades of a grass type per cell quadrant\n"
+			"                                (by default the excess is thinned evenly; the game drops it unevenly)\n"
 			"\n"
 			"Grass-in-object rejection (NGIO [RayCastConfig] equivalents):\n"
 			"  --ngio-config <file|none>     NGIO's GrassControl.ini, default Data/SKSE/Plugins/GrassControl.ini when it\n"
@@ -201,6 +203,8 @@ namespace FasterNGIO::App
 				options.overwrite = true;
 			} else if (arg == "--write-empty-cells") {
 				options.skipEmptyCells = false;
+			} else if (arg == "--no-blade-cap") {
+				options.capQuadrantBlades = false;
 			} else if (arg == "--reject") {
 				const auto choice = ParseRejectChoice(requireValue(arg));
 				if (!choice) {

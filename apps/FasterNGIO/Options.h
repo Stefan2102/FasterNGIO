@@ -83,6 +83,9 @@ namespace FasterNGIO::App
 		bool overwrite{ false };
 		// Cells with no grass get no cache file (--write-empty-cells writes NGIO's 4-byte one).
 		bool skipEmptyCells{ true };
+		// Keep at most the engine's 8191 blades of a grass type per cell quadrant, thinned evenly
+		// (Grass::BlockLayout); --no-blade-cap keeps them all.
+		bool capQuadrantBlades{ true };
 		RejectChoice rejection{ RejectChoice::Auto };
 		// --reject (or the launcher) chose it, so NGIO's Ray-cast-enabled does not.
 		bool rejectionChosen{ false };

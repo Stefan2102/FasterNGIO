@@ -128,7 +128,17 @@ namespace FasterNGIO::App
 
 	Archives::ArchiveResolver MakeResolver(const GenerateOptions& a_options, const LoadedPlugins& a_plugins)
 	{
-		return Archives::ArchiveResolver(a_options.dataPath, Archives::DefaultArchiveOrder(a_plugins.loadOrder));
+		Archives::ArchiveIniLists ini;
+		if (a_options.readGameIni) {
+			if (const auto directory = Grass::LocateGameIniDirectory(a_options.pluginsTxtPath, a_options.dataPath, a_options.gameIniDirectory)) {
+				ini = Grass::ReadArchiveIniLists(directory->path);
+				if (ini.resourceArchiveList || ini.resourceArchiveList2) {
+					const auto describe = [](const auto& a_list) { return a_list ? std::format("{} archive(s)", a_list->size()) : std::string("default"); };
+					spdlog::info("game INI [Archive]: sResourceArchiveList={} sResourceArchiveList2={}", describe(ini.resourceArchiveList), describe(ini.resourceArchiveList2));
+				}
+			}
+		}
+		return Archives::ArchiveResolver(a_options.dataPath, Archives::DefaultArchiveOrder(a_plugins.loadOrder, ini));
 	}
 
 	std::shared_ptr<const Rejection::WorldIndex> BuildWorldIndex(const GameData::StaticWorldSnapshot& a_snapshot, GameData::FormID a_worldFormID,

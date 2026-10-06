@@ -160,7 +160,7 @@ namespace FasterNGIO::Grass::Internal
 						const auto y = patchStartY + (static_cast<float>(latticeY) + 0.5f) * cellStep + jitterY;
 						// NGIO's in-object test runs inside this in the engine. It is applied as a
 						// post-filter instead, so the colour/orientation/height draws are always consumed.
-						EmitBlade(result, groupIndex, a_land, grass, x, y, waterHeight, signedRandom);
+						EmitBlade(result, groupIndex, a_quadrant, a_land, grass, x, y, waterHeight, signedRandom);
 					}
 				}
 			}

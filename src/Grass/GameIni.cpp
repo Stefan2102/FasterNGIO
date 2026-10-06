@@ -7,6 +7,7 @@
 #include "Platform/IniFile.h"
 #include "Platform/ModOrganizer.h"
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace FasterNGIO::Grass
@@ -90,6 +91,43 @@ namespace FasterNGIO::Grass
 			}
 		}
 		return result;
+	}
+
+	Archives::ArchiveIniLists ReadArchiveIniLists(const std::filesystem::path& a_directory)
+	{
+		// Comma-separated archive names, spaces around each trimmed.
+		const auto split = [](const std::string& a_text) {
+			std::vector<std::string> names;
+			std::size_t begin = 0;
+			while (begin <= a_text.size()) {
+				const auto end = (std::min)(a_text.find(',', begin), a_text.size());
+				const auto first = a_text.find_first_not_of(" \t", begin);
+				if (first != std::string::npos && first < end) {
+					const auto last = a_text.find_last_not_of(" \t", end - 1);
+					names.push_back(a_text.substr(first, last - first + 1));
+				}
+				begin = end + 1;
+			}
+			return names;
+		};
+		Archives::ArchiveIniLists lists;
+		for (const auto* name : { "Skyrim.ini", "SkyrimCustom.ini" }) {
+			const auto path = Platform::FindInDirectory(a_directory, name);
+			if (!path) {
+				continue;
+			}
+			const auto ini = Platform::IniFile::Load(*path);
+			if (!ini) {
+				continue;
+			}
+			if (const auto text = ini->Get("Archive", "sResourceArchiveList")) {
+				lists.resourceArchiveList = split(*text);
+			}
+			if (const auto text = ini->Get("Archive", "sResourceArchiveList2")) {
+				lists.resourceArchiveList2 = split(*text);
+			}
+		}
+		return lists;
 	}
 
 	void ApplyGrassIniSettings(const GrassIniSettings& a_ini, PlacementSettings& a_settings)

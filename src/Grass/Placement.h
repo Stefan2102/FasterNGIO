@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace FasterNGIO::Grass
@@ -70,6 +71,10 @@ namespace FasterNGIO::Grass
 		float globalScale{ 1.0f };
 		// Seasons of Skyrim: a land texture -> the land texture whose grass list it takes this season.
 		const std::unordered_map<GameData::FormID, GameData::FormID, GameData::FormIDHash>* landTextureGrass{ nullptr };
+		// Grass types whose model the game cannot load (GrassModelLayout::missingGrass). The engine
+		// counts them against iMaxGrassTypesPerTexure but places none (no RNG draws), as for a GRAS
+		// without a model; a cache group for one would make the game misread the rest of the file.
+		const std::unordered_set<GameData::FormID, GameData::FormIDHash>* unloadableGrass{ nullptr };
 	};
 
 	// One output group (one GRAS) of a cell, in first-use order.
@@ -89,6 +94,10 @@ namespace FasterNGIO::Grass
 		std::array<std::uint16_t, kBladeWords> words{};
 		float position[3]{};
 		std::uint32_t groupIndex{ 0 };
+		// The quadrant of the cell (0-3; bit 0 east, bit 1 north) the blade is cached under: the one
+		// vanilla placed it from, else the one it stands in. The engine flushes each type's blades into
+		// blocks once per quadrant (see CellCache.h).
+		std::uint8_t quadrant{ 0 };
 		// The colour, orientation and height draws the words were encoded from.
 		float brightness{ 0.0f };
 		float orientation{ 0.0f };

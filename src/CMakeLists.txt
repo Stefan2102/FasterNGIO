@@ -2,6 +2,8 @@ add_library(FasterNGIOCore STATIC
 	Archives/ArchiveResolver.cpp
 	Archives/ArchiveResolver.h
 	Collision/CollisionModel.h
+	Collision/InstanceShape.cpp
+	Collision/InstanceShape.h
 	Concurrency/AtomicWait.h
 	Concurrency/MpscQueue.h
 	Collision/NifCollisionExtractor.cpp
@@ -28,6 +30,8 @@ add_library(FasterNGIOCore STATIC
 	Grass/CellCache.h
 	Grass/GameIni.cpp
 	Grass/GameIni.h
+	Grass/GrassModels.cpp
+	Grass/GrassModels.h
 	Grass/NgioCacheWriter.cpp
 	Grass/NgioCacheWriter.h
 	Grass/Internal/PlacementCommon.h

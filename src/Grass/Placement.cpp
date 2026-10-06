@@ -371,7 +371,7 @@ namespace FasterNGIO::Grass
 					continue;
 				}
 
-				ForEachTextureGrass(a_snapshot, *texture, a_settings.maxGrassTypesPerTexture, [&](const GameData::GrassInfo& a_grass) {
+				ForEachTextureGrass(a_snapshot, *texture, a_settings, [&](const GameData::GrassInfo& a_grass) {
 					GrassParamBuild param;
 					param.grass = std::addressof(a_grass);
 					float sum = 0.0f;

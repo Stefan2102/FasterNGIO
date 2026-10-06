@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameData/GameData.h"
+#include "Grass/CellCache.h"
 #include "Grass/Placement.h"
 #include "Rejection/RejectionConfig.h"
 #include "Rejection/RejectionFeatures.h"
@@ -58,6 +59,8 @@ namespace FasterNGIO::Pipeline
 		// season's suffix ("WIN") for Grass Cache Helper NG's. A cell is skipped only when all exist.
 		std::vector<std::string> fileSuffixes{ std::string{} };
 		Grass::PlacementSettings placement;
+		// Blades per block and the quadrant cap (Grass::FinalizeCell).
+		Grass::BlockLayout blockLayout;
 		bool overwrite{ false };
 		// A cell left with no grass gets no file (with overwrite, an existing one is removed) instead of
 		// NGIO's 4-byte empty cache.
@@ -104,6 +107,8 @@ namespace FasterNGIO::Pipeline
 		std::uint64_t validationMismatches{ 0 };
 		// Blades NGIO's grass cliffs moved onto a cliff.
 		std::uint64_t bladesMoved{ 0 };
+		// Blades thinned away by the engine's per-quadrant cap.
+		std::uint64_t bladesCapped{ 0 };
 	};
 
 	// Places, rejects and writes every cell through an AsyncStateGraph: a CellTrace artifact per

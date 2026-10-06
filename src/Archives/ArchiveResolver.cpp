@@ -292,9 +292,9 @@ namespace FasterNGIO::Archives
 		return archive.Read(archive.Entries()[it->second.entry].second);
 	}
 
-	std::vector<std::string> DefaultArchiveOrder(std::span<const GameData::LoadOrderEntry> a_loadOrder)
+	std::vector<std::string> DefaultArchiveOrder(std::span<const GameData::LoadOrderEntry> a_loadOrder, const ArchiveIniLists& a_ini)
 	{
-		std::vector<std::string> order{
+		std::vector<std::string> order = a_ini.resourceArchiveList.value_or(std::vector<std::string>{
 			"Skyrim - Misc.bsa",
 			"Skyrim - Shaders.bsa",
 			"Skyrim - Interface.bsa",
@@ -302,6 +302,8 @@ namespace FasterNGIO::Archives
 			"Skyrim - Meshes0.bsa",
 			"Skyrim - Meshes1.bsa",
 			"Skyrim - Sounds.bsa",
+		});
+		const auto list2 = a_ini.resourceArchiveList2.value_or(std::vector<std::string>{
 			"Skyrim - Voices_en0.bsa",
 			"Skyrim - Textures0.bsa",
 			"Skyrim - Textures1.bsa",
@@ -313,7 +315,8 @@ namespace FasterNGIO::Archives
 			"Skyrim - Textures7.bsa",
 			"Skyrim - Textures8.bsa",
 			"Skyrim - Patch.bsa",
-		};
+		});
+		order.insert(order.end(), list2.begin(), list2.end());
 		for (const auto& entry : a_loadOrder) {
 			const auto stem = std::filesystem::path(entry.pluginName).stem().string();
 			order.push_back(stem + ".bsa");
