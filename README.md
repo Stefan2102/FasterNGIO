@@ -46,7 +46,10 @@ A cell left with no grass gets NGIO's 4-byte empty cache file, because without a
 generates that cell's grass itself every time it loads, and would regrow grass that rejection removed.
 When NGIO's `GrassControl.ini` has `Use-grass-cache` and `Only-load-from-cache` on (as
 Extend-grass-distance requires), the game never does that, so such cells get no file at all.
-`--write-empty-cells` and `--skip-empty-cells` choose either way.
+`--write-empty-cells` and `--skip-empty-cells` choose either way. With `--overwrite`, a cell that
+gets no file loses the cache an earlier run left for it. Under Mod Organizer 2 that file may belong to
+another mod (a downloaded cache, say), and deleting it through MO2 would delete it from that mod, so
+it gets the empty cache file instead, which goes to Overwrite and hides the other mod's.
 
 Placement (`--placement`):
 

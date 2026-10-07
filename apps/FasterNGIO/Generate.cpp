@@ -10,6 +10,7 @@
 #include "Grass/LandTexture.h"
 #include "Pipeline/CellPipeline.h"
 #include "Pipeline/FileWriterPool.h"
+#include "Platform/ModOrganizer.h"
 #include "Platform/Text.h"
 #include "Rejection/CpuBvh.h"
 
@@ -70,6 +71,8 @@ namespace FasterNGIO::App
 			const ResolvedSeasons& seasons;
 			// The caches in the output folder when the run started (see ListExistingCaches).
 			const std::unordered_set<std::string>* existingFiles{ nullptr };
+			// Under Mod Organizer 2: an empty cell's existing files are emptied, not removed.
+			bool emptyInsteadOfRemove{ false };
 			// Each grass type's blades per cache block, from its model.
 			const Grass::GrassModelLayout& grassModels;
 			// Opened before the first world (grass models, then collision), shared read-only.
@@ -156,8 +159,10 @@ namespace FasterNGIO::App
 			if (a_shared.options.validateCpu) {
 				spdlog::info("validation: {} blade(s) differ from the brute-force CPU reference", a_stats.validationMismatches);
 			}
-			spdlog::info("generated {} file(s), skipped {}, empty {}, failed {}, blades={} rejected={}{}{} in {:.2f}s (total {:.2f}s, {} file(s) still queued)",
-				a_stats.cellsWritten, a_stats.cellsSkipped, a_stats.cellsEmpty, a_stats.cellsFailed, a_stats.blades, a_stats.bladesRejected,
+			spdlog::info("generated {} file(s), skipped {}, empty {}{}, failed {}, blades={} rejected={}{}{} in {:.2f}s (total {:.2f}s, {} file(s) still queued)",
+				a_stats.cellsWritten, a_stats.cellsSkipped, a_stats.cellsEmpty,
+				a_stats.staleCaches ? std::format(" ({} earlier cache(s) {})", a_stats.staleCaches, a_shared.emptyInsteadOfRemove ? "emptied" : "removed") : std::string{},
+				a_stats.cellsFailed, a_stats.blades, a_stats.bladesRejected,
 				a_stats.bladesMoved ? std::format(" moved onto cliffs={}", a_stats.bladesMoved) : std::string{},
 				a_stats.bladesCapped ? std::format(" over the quadrant cap={}", a_stats.bladesCapped) : std::string{}, SecondsSince(a_generationBegin),
 				SecondsSince(a_shared.begin), a_shared.writer.PendingFiles());
@@ -216,6 +221,7 @@ namespace FasterNGIO::App
 			a_total.cellsWritten += a_pass.cellsWritten;
 			a_total.cellsSkipped += a_pass.cellsSkipped;
 			a_total.cellsEmpty += a_pass.cellsEmpty;
+			a_total.staleCaches += a_pass.staleCaches;
 			a_total.cellsFailed += a_pass.cellsFailed;
 			a_total.cellsCancelled += a_pass.cellsCancelled;
 			a_total.blades += a_pass.blades;
@@ -309,6 +315,7 @@ namespace FasterNGIO::App
 				pipeline.overwrite = options.overwrite;
 				pipeline.skipEmpty = options.skipEmptyCells.value_or(false);
 				pipeline.existingFiles = a_shared.existingFiles;
+				pipeline.emptyInsteadOfRemove = a_shared.emptyInsteadOfRemove;
 				pipeline.shapesByGrass = &a_shared.shapes.byGrass;
 				pipeline.backend = rejection->backend;
 				pipeline.world = rejection->index.get();
@@ -486,8 +493,15 @@ namespace FasterNGIO::App
 			ThrowIfStopped(a_control);
 			writer.emplace(options.writerThreads, kMaxPendingWriteBytes);
 			std::optional<std::unordered_set<std::string>> existingFiles;
+			bool emptyInsteadOfRemove = false;
 			if (options.skipEmptyCells.value_or(false) && options.overwrite) {
 				existingFiles.emplace(ListExistingCaches(options.outputDirectory));
+				// Through MO2's VFS an existing cache may be in another mod (a downloaded cache), where a
+				// remove would delete it; an empty cache written over it lands in Overwrite and hides it.
+				emptyInsteadOfRemove = Platform::ModOrganizerDirectory().has_value();
+				if (emptyInsteadOfRemove) {
+					spdlog::info("under Mod Organizer 2: an empty cell's existing cache gets the empty cache rather than being removed, since it may belong to another mod");
+				}
 			}
 			RunShared shared{
 				.options = options,
@@ -499,6 +513,7 @@ namespace FasterNGIO::App
 				.writer = *writer,
 				.seasons = seasons,
 				.existingFiles = existingFiles ? std::addressof(*existingFiles) : nullptr,
+				.emptyInsteadOfRemove = emptyInsteadOfRemove,
 				.grassModels = grassModels,
 				.resolver = std::move(resolver),
 			};

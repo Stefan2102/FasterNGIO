@@ -194,7 +194,9 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   (`bAllowCreateGrass`, which NGIO clears only then). `--skip-empty-cells`, `--write-empty-cells` and
   the launcher's advanced choice override it (`skipEmptyCells`). When empty cells get no file, with
   `--overwrite` their old file is removed (only names the output folder listed at the start, since a
-  remove call costs as much as a write).
+  remove call costs as much as a write). Under MO2 it gets the empty cache instead
+  (`emptyInsteadOfRemove`, decided once per run): through the VFS the file may be another mod's, and
+  a remove deletes it inside that mod, while a write lands in Overwrite and hides it.
 - **No locks on the hot paths.** Workers and the render thread communicate through the AsyncStateGraph
   (producers, GPU submission tokens, capacity suspensions) and `Pipeline::MpscQueue`. The CPU BVH,
   `SmoothWeightField` and `DataDirectory` are built up front and immutable afterwards. Do not add mutexes or condition variables to the

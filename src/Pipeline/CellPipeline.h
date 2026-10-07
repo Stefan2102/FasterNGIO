@@ -65,6 +65,10 @@ namespace FasterNGIO::Pipeline
 		// A cell left with no grass gets no file (with overwrite, an existing one is removed) instead of
 		// NGIO's 4-byte empty cache.
 		bool skipEmpty{ false };
+		// Under Mod Organizer 2 an existing file can be another mod's, and removing it through the VFS
+		// deletes it inside that mod: an empty cell's existing files get the empty cache instead,
+		// which goes to Overwrite and hides them.
+		bool emptyInsteadOfRemove{ false };
 		// The .cgid names (lower case) in outputDirectory when the run started: an empty cell removes
 		// only these, rather than trying every name. Null: every name is tried.
 		const std::unordered_set<std::string>* existingFiles{ nullptr };
@@ -100,6 +104,8 @@ namespace FasterNGIO::Pipeline
 		std::uint64_t cellsSkipped{ 0 };
 		// Cells with no grass whose files were not written (skipEmpty).
 		std::uint64_t cellsEmpty{ 0 };
+		// Their files left from an earlier run: removed, or emptied (emptyInsteadOfRemove).
+		std::uint64_t staleCaches{ 0 };
 		std::uint64_t cellsFailed{ 0 };
 		std::uint64_t cellsCancelled{ 0 };
 		std::uint64_t blades{ 0 };
