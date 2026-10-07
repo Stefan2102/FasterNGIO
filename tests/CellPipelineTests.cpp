@@ -9,6 +9,8 @@
 
 #include <atomic>
 #include <stop_token>
+#include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -103,8 +105,31 @@ TEST(CellPipeline, SkipsEmptyCells)
 	EXPECT_EQ(Pipeline::RunCellPipeline(world.Desc()).cellsWritten, 3u);
 	EXPECT_EQ(Pipeline::RunCellPipeline(desc).cellsSkipped, 3u);
 	desc.overwrite = true;
-	EXPECT_EQ(Pipeline::RunCellPipeline(desc).cellsEmpty, 3u);
+	const auto overwritten = Pipeline::RunCellPipeline(desc);
+	EXPECT_EQ(overwritten.cellsEmpty, 3u);
+	EXPECT_EQ(overwritten.staleCaches, 3u);
 	EXPECT_TRUE(std::filesystem::is_empty(world.output.Path()));
+}
+
+TEST(CellPipeline, EmptiesRatherThanRemovesUnderModOrganizer)
+{
+	// Through MO2's VFS an old cache may be another mod's: it gets the empty cache, which hides it.
+	EmptyWorld world;
+	Tests::WriteText(world.output.Path() / "Testx0000y-001.cgid", "grass");
+	Tests::WriteText(world.output.Path() / "Testx0002y-001.cgid", "grass");
+	// Only the files listed at the start are touched.
+	const std::unordered_set<std::string> existing{ "testx0000y-001.cgid" };
+	auto desc = world.Desc();
+	desc.skipEmpty = true;
+	desc.overwrite = true;
+	desc.existingFiles = &existing;
+	desc.emptyInsteadOfRemove = true;
+	const auto stats = Pipeline::RunCellPipeline(desc);
+	EXPECT_EQ(stats.cellsEmpty, 3u);
+	EXPECT_EQ(stats.staleCaches, 1u);
+	EXPECT_EQ(Tests::ReadAll(world.output.Path() / "Testx0000y-001.cgid"), (std::vector<std::uint8_t>{ 0, 0, 0, 0 }));
+	EXPECT_FALSE(std::filesystem::exists(world.output.Path() / "Testx0001y-001.cgid"));
+	EXPECT_EQ(Tests::ReadAll(world.output.Path() / "Testx0002y-001.cgid").size(), 5u);
 }
 
 TEST(CellPipeline, HandsFilesToTheWriter)

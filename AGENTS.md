@@ -82,13 +82,21 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   FasterNGIO writes the one the game's grass vertex shader reads (`EncodeBlade`; tested in
   `PlacementTests`' `BladeEncoding`), and in the block layout (see "Blocks are the engine's"). Vanilla changes must preserve the engine's RNG draw order. Linux output (both placements)
   must stay byte-identical to Windows output.
+- **Group headers are the engine's.** The engine's writer (in `GrassManager`, beside 76329) stores a
+  group's model path as the GRAS MODL string as loaded (case and separators kept) after its `meshes\`
+  prefix (`GameData::GrassCacheModelPath`), and the three flag bytes as shader property bits 44, 43, 42:
+  fit to slope, uniform scale, vertex lighting. Its reader sets them back in that order, so reversing
+  them turns vanilla grass's (fit, uniform, no vertex lighting) into (no fit, uniform, vertex lighting).
 - **Game settings.** Only settings that change placement are read: `iMinGrassSize`,
   `iMaxGrassTypesPerTexure`, `fTexturePctThreshold`, all in the engine's Skyrim.ini collection, which
-  loads `Skyrim.ini` then `SkyrimCustom.ini` (`SkyrimPrefs.ini` feeds only the prefs collection). The
-  engine reads them through the Win32 profile API: first occurrence of a key wins, values parse as
-  their leading number. Engine defaults, then INIs, then command-line values. The same collection's
-  `[Archive] sResourceArchiveList`/`sResourceArchiveList2` lead the archive order (`ReadArchiveIniLists`,
-  `DefaultArchiveOrder`), since mods register BSAs there.
+  loads `Skyrim.ini` then `SkyrimCustom.ini` (`SkyrimPrefs.ini` feeds only the prefs collection), then
+  `Data\<plugin>.ini` for each enabled `plugins.txt` line, named up to its first `.esp`/`.esl`/`.esm`
+  (`PluginIniFiles`; implicitly loaded masters are not in plugins.txt and get none). Each file
+  overrides the keys it has. The engine reads them through the Win32 profile API: first occurrence of
+  a key wins, values parse as their leading number. Engine defaults, then INIs, then command-line
+  values. The same collection's `[Archive] sResourceArchiveList`/`sResourceArchiveList2` lead the
+  archive order (`ReadArchiveIniLists`, `DefaultArchiveOrder`), since mods register BSAs there; the
+  engine registers those archives after reading the plugin INIs.
 - **Smooth placement is seam-free and calibrated.** Weights merge every shared vertex (quadrants and
   cells), blades read them at their own position, and the per-type density scale is computed over the
   whole worldspace, never the selected cells, so a cell is identical whatever a run selects. Judge
@@ -108,6 +116,16 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   taken from the parent while PNAM's Use Land Data bit is set; any other cell has no water (-FLT_MAX).
   Most exterior cells have no XCLW, so the worldspace default (Tamriel's -14000) decides the coast.
   Only water states 0-5 are tested; 6 and 7 place regardless (`PassesWaterFilter`).
+- **Partial forms add, they don't replace.** A WRLD or CELL record flagged 0x4000 (partial form) that
+  overrides an existing form goes through `LoadPartial` (`FUN_1401bbaa0` picks it for parent forms),
+  which reads only a worldspace's map bounds and nothing of a cell; with no earlier version the record
+  is skipped. `ParseRecord` therefore takes nothing from such a record but its children. SR Exterior
+  Cities' EDID-only partial Tamriel otherwise drops DNAM, putting the default water at 0 and most of
+  Skyrim's land underwater.
+- **Land is the engine's.** `TESObjectLAND::Load` takes VHGT only after a DATA with bit 0 and VCLR
+  only after one with bit 1 (no DATA: flags 0). A LAND without heights keeps the worldspace's DNAM
+  default land height (-2048 without one, through the parent like water, `LandDataWorld`) at every
+  vertex and still grows grass: `SelectLands` fills it in.
 - **Grass the game cannot load is not placed.** When a GRAS model is in no loose file or archive,
   `LoadGrassType` returns null: generation skips the type (no RNG draws), and loading a cache skips its
   group header but not its blocks, misreading the rest of the file. `MeasureGrassModels` lists those
@@ -156,6 +174,9 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   never looks them up when all three are given; the launcher shows them in place of the game folder.
   Output still goes through the VFS (`Data\Grass`, which MO2 sends to Overwrite), as NGIO's own
   pregeneration does.
+- **254 full plugins.** The engine has no limit: it gives a full plugin its position truncated to a
+  byte, so the 255th collides with light plugins (0xFE) and later ones wrap. `PrepareLoadOrder`
+  refuses such a load order (naming the first plugin past the limit) rather than skip plugins.
 - **Fallback is decided up front.** `GpuRejector` checks every feature it needs before any work is
   posted and throws `GpuUnsupportedError` listing what is missing; `--reject auto` then uses the CPU
   BVH. Add any new GPU requirement to that check.
@@ -163,10 +184,19 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   `--writers`) writes every `.cgid`, one call per file; workers only serialize and queue, and suspend
   in the graph while the backlog is over budget. File creation is serialized by NTFS and antivirus
   scanning (about 150-300 us per file here, whatever the thread count), so it bounds a full run; a
-  world's pipeline returns once its files are queued so the next world prepares meanwhile. A cell
-  left with no grass gets no file by default (`skipEmptyCells`; `--write-empty-cells` and the
-  launcher's advanced checkbox restore NGIO's 4-byte one); with `--overwrite`, its old file is removed
-  (only names the output folder listed at the start, since a remove call costs as much as a write).
+  world's pipeline returns once its files are queued so the next world prepares meanwhile. A file
+  never exists truncated (`WriteWholeFile`): on Windows it is created `FILE_FLAG_DELETE_ON_CLOSE` and
+  kept (`FileDispositionInfoEx`) only once written, so a failed write or a killed run leaves no file;
+  a temporary file renamed into place costs twice as much per file there. Elsewhere it is a `.tmp`
+  renamed over the target. A cell left with no grass gets NGIO's 4-byte file unless NGIO only loads
+  from the cache (`NgioSettings::OnlyLoadsFromCache`: Use-grass-cache and Only-load-from-cache on,
+  Updating-Cache off): without a file the engine generates the cell at runtime on every load
+  (`bAllowCreateGrass`, which NGIO clears only then). `--skip-empty-cells`, `--write-empty-cells` and
+  the launcher's advanced choice override it (`skipEmptyCells`). When empty cells get no file, with
+  `--overwrite` their old file is removed (only names the output folder listed at the start, since a
+  remove call costs as much as a write). Under MO2 it gets the empty cache instead
+  (`emptyInsteadOfRemove`, decided once per run): through the VFS the file may be another mod's, and
+  a remove deletes it inside that mod, while a write lands in Overwrite and hides it.
 - **No locks on the hot paths.** Workers and the render thread communicate through the AsyncStateGraph
   (producers, GPU submission tokens, capacity suspensions) and `Pipeline::MpscQueue`. The CPU BVH,
   `SmoothWeightField` and `DataDirectory` are built up front and immutable afterwards. Do not add mutexes or condition variables to the

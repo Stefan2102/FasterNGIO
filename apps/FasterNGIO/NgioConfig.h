@@ -69,6 +69,13 @@ namespace FasterNGIO::App
 		bool grassCliffs{ true };
 		std::vector<NgioFormRef> grassCliffForms;
 
+		// What decides whether the game generates grass for a cell without a cache file: NGIO turns
+		// the engine's bAllowCreateGrass off only with Use-grass-cache and Only-load-from-cache on and
+		// Updating-Cache off (GidFileCache::FixFileFormat).
+		bool useGrassCache{ false };
+		bool onlyLoadFromCache{ false };
+		bool updatingCache{ false };
+
 		bool superDenseGrass{ false };
 		std::int32_t superDenseMode{ 8 };
 		std::int32_t ensureMaxGrassTypes{ -1 };
@@ -82,6 +89,8 @@ namespace FasterNGIO::App
 		std::vector<NgioIgnoredShapes> ignoredShapes;
 
 		[[nodiscard]] bool Present() const { return !files.empty(); }
+		// The game only loads grass from cache files, so a cell without one simply has none.
+		[[nodiscard]] bool OnlyLoadsFromCache() const { return Present() && useGrassCache && onlyLoadFromCache && !updatingCache; }
 	};
 
 	// Where NGIO keeps its settings, relative to the Data folder.
@@ -104,8 +113,8 @@ namespace FasterNGIO::App
 	void LogRejectionFeatures(const Rejection::RejectionFeatures& a_features);
 
 	// Folds a_settings into a_options where the command line (or the launcher) chose nothing: the
-	// ray-cast settings, Ray-cast-enabled, the placement settings and the worldspace lists. The
-	// command line's ray-cast values are applied either way.
+	// ray-cast settings, Ray-cast-enabled, the placement settings, the worldspace lists and whether
+	// empty cells get a file. The command line's ray-cast values are applied either way.
 	void ApplyNgioSettings(const NgioSettings& a_settings, GenerateOptions& a_options);
 
 	// The load-order form ID of a_ref, or nullopt when its plugin is not loaded.

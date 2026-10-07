@@ -131,24 +131,8 @@ namespace FasterNGIO::Grass
 			if (a_settings.waterHeight) {
 				return *a_settings.waterHeight;
 			}
-			const GameData::WorldInfo* world = nullptr;
-			if (cell.worldFormID) {
-				if (const auto worldIt = a_snapshot.worldsByFormID.find(*cell.worldFormID); worldIt != a_snapshot.worldsByFormID.end()) {
-					world = std::addressof(worldIt->second);
-				}
-			}
-			if (!world) {
-				return kNoWater;
-			}
-			// Bounded, in case a load order makes the parents a cycle.
-			for (int depth = 0; depth < 64 && world->UsesParentLandData(); ++depth) {
-				const auto parentIt = a_snapshot.worldsByFormID.find(*world->parentWorldFormID);
-				if (parentIt == a_snapshot.worldsByFormID.end()) {
-					break;
-				}
-				world = std::addressof(parentIt->second);
-			}
-			return world->defaultWaterHeight;
+			const auto* world = cell.worldFormID ? GameData::LandDataWorld(a_snapshot.worldsByFormID, *cell.worldFormID) : nullptr;
+			return world ? world->defaultWaterHeight : kNoWater;
 		}
 
 		std::uint32_t PatchLatticeSide(const GameData::GrassInfo& a_grass, const PlacementSettings& a_settings)

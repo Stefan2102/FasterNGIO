@@ -132,7 +132,7 @@ namespace FasterNGIO::Grass::Internal
 
 				const auto [groupIt, inserted] = groupIndexByGrass.try_emplace(grass.formID, static_cast<std::uint32_t>(result.groups.size()));
 				if (inserted) {
-					result.groups.push_back(CellGrassGroup{ .grass = std::addressof(grass), .modelPath = GameData::NormalizeModelPath(grass.modelPath) });
+					result.groups.push_back(CellGrassGroup{ .grass = std::addressof(grass), .modelPath = GameData::GrassCacheModelPath(grass.modelPath) });
 				}
 				const auto groupIndex = groupIt->second;
 

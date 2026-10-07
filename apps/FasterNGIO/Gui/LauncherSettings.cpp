@@ -27,7 +27,11 @@ namespace FasterNGIO::Gui
 		}
 #endif
 		settings.overwrite = file.Get("overwrite") == "1";
-		settings.skipEmptyCells = file.Get("skip_empty_cells") != "0";
+		// "auto", "write" or "skip" (the older skip_empty_cells key was a checkbox defaulting to skip,
+		// which the empty-cell default from NGIO's settings replaced).
+		if (const auto empty = file.Get("empty_cells"); empty == "write" || empty == "skip") {
+			settings.skipEmptyCells = *empty == "skip";
+		}
 		settings.capQuadrantBlades = file.Get("cap_quadrant_blades") != "0";
 		settings.renderGeometry = file.Get("render_geometry") == "1";
 		if (const auto seasons = file.Get("seasons")) {
@@ -57,7 +61,7 @@ namespace FasterNGIO::Gui
 		file.Set("placement", App::PlacementName(placement));
 		file.Set("rejection", App::RejectChoiceName(rejection));
 		file.Set("overwrite", overwrite ? "1" : "0");
-		file.Set("skip_empty_cells", skipEmptyCells ? "1" : "0");
+		file.Set("empty_cells", !skipEmptyCells ? "auto" : *skipEmptyCells ? "skip" : "write");
 		file.Set("cap_quadrant_blades", capQuadrantBlades ? "1" : "0");
 		file.Set("render_geometry", renderGeometry ? "1" : "0");
 		file.Set("seasons", seasons == App::SeasonsChoice::On ? "on" : seasons == App::SeasonsChoice::Off ? "off" : "auto");

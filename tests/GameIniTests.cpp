@@ -1,5 +1,6 @@
 #include "Grass/GameIni.h"
 #include "Grass/Placement.h"
+#include "Platform/Text.h"
 
 #include "TestSupport.h"
 
@@ -61,6 +62,45 @@ TEST(GameIni, ReadsTheArchiveLists)
 	WriteText(empty.Path() / "Skyrim.ini", "[Grass]\niMinGrassSize=40\n");
 	const auto none = Grass::ReadArchiveIniLists(empty.Path());
 	EXPECT_FALSE(none.resourceArchiveList || none.resourceArchiveList2);
+}
+
+TEST(GameIni, ReadsPluginInisAfterTheGamesInPluginsTxtOrder)
+{
+	TempDirectory temp;
+	const auto data = temp.Path() / "Data";
+	const auto inis = temp.Path() / "INI";
+	WriteText(inis / "Skyrim.ini", "[Grass]\niMinGrassSize=40\n[Archive]\nsResourceArchiveList2=Base.bsa\n");
+	WriteText(inis / "SkyrimCustom.ini", "[Grass]\niMaxGrassTypesPerTexure=4\n");
+	// Named for the plugin up to its extension, found case-insensitively; a disabled plugin's and an
+	// implicitly loaded master's INIs are not read.
+	WriteText(data / "denser grass.INI", "[Grass]\niMinGrassSize=60\nfTexturePctThreshold=0.3\n");
+	WriteText(data / "Later.ini", "[Grass]\niMinGrassSize=70\n[Archive]\nsResourceArchiveList2=Base.bsa, Grass.bsa\n");
+	WriteText(data / "Disabled.ini", "[Grass]\niMinGrassSize=1\n");
+	WriteText(data / "Skyrim.ini", "[Grass]\niMaxGrassTypesPerTexure=1\n");
+	const auto pluginsTxt = temp.Path() / "plugins.txt";
+	WriteText(pluginsTxt, "# comment\r\n*Denser Grass.esp\r\nDisabled.esp\r\n*NoIni.esm\r\n*Later.ESL\r\n");
+
+	const auto pluginInis = Grass::PluginIniFiles(data, pluginsTxt);
+	ASSERT_EQ(pluginInis.size(), 2u);
+	EXPECT_EQ(Platform::LowerAscii(pluginInis[0].filename().string()), "denser grass.ini");
+	EXPECT_EQ(Platform::LowerAscii(pluginInis[1].filename().string()), "later.ini");
+
+	const auto files = Grass::SkyrimIniFiles(inis, pluginInis);
+	ASSERT_EQ(files.size(), 4u);
+	const auto ini = Grass::ReadGrassIniSettings(files);
+	ASSERT_TRUE(ini.minGrassSize && ini.maxGrassTypesPerTexture && ini.texturePctThreshold);
+	EXPECT_EQ(ini.minGrassSize->value, 70u);
+	EXPECT_EQ(ini.minGrassSize->source.filename(), "Later.ini");
+	EXPECT_EQ(ini.maxGrassTypesPerTexture->value, 4u);
+	EXPECT_FLOAT_EQ(ini.texturePctThreshold->value, 0.3f);
+	EXPECT_EQ(ini.filesRead.size(), 4u);
+
+	const auto lists = Grass::ReadArchiveIniLists(files);
+	ASSERT_TRUE(lists.resourceArchiveList2);
+	EXPECT_EQ(*lists.resourceArchiveList2, (std::vector<std::string>{ "Base.bsa", "Grass.bsa" }));
+
+	// Without a game INI folder the plugin INIs still apply.
+	EXPECT_EQ(Grass::ReadGrassIniSettings(Grass::SkyrimIniFiles(std::nullopt, pluginInis)).minGrassSize->value, 70u);
 }
 
 TEST(GameIni, LeavesUnsetKeysAtEngineDefaults)

@@ -191,6 +191,7 @@ namespace FasterNGIO::Pipeline
 				stats.cellsWritten = _written.load();
 				stats.cellsSkipped = _skipped.load();
 				stats.cellsEmpty = _empty.load();
+				stats.staleCaches = _stale.load();
 				stats.cellsFailed = _failed.load();
 				stats.cellsCancelled = _cancelled.load();
 				stats.blades = _blades.load();
@@ -462,10 +463,23 @@ namespace FasterNGIO::Pipeline
 						// A cache left from an earlier run would otherwise still place grass here.
 						if (_desc.overwrite) {
 							for (std::size_t name = 0; name < names; ++name) {
-								const auto path = CellPath(a_input.cell, name);
-								if (!_desc.existingFiles || _desc.existingFiles->contains(Platform::LowerAscii(path.filename().string()))) {
+								auto path = CellPath(a_input.cell, name);
+								if (_desc.existingFiles && !_desc.existingFiles->contains(Platform::LowerAscii(path.filename().string()))) {
+									continue;
+								}
+								if (_desc.emptyInsteadOfRemove) {
+									auto empty = Grass::SerializeNgioCellCache(cache);
+									if (_desc.writer) {
+										_desc.writer->Submit(std::move(path), std::move(empty), _desc.writeTally);
+									} else {
+										Platform::WriteWholeFile(path, empty);
+									}
+									_stale.fetch_add(1);
+								} else {
 									std::error_code error;
-									std::filesystem::remove(path, error);
+									if (std::filesystem::remove(path, error)) {
+										_stale.fetch_add(1);
+									}
 								}
 							}
 						}
@@ -663,6 +677,7 @@ namespace FasterNGIO::Pipeline
 			std::atomic<std::uint64_t> _written{ 0 };
 			std::atomic<std::uint64_t> _skipped{ 0 };
 			std::atomic<std::uint64_t> _empty{ 0 };
+			std::atomic<std::uint64_t> _stale{ 0 };
 			std::atomic<std::uint64_t> _failed{ 0 };
 			std::atomic<std::uint64_t> _cancelled{ 0 };
 			std::atomic<std::uint64_t> _blades{ 0 };

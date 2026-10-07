@@ -106,7 +106,10 @@ namespace FasterNGIO::App
 			"  --writers <n>                 Threads that only write cache files, default 1 (file creation is\n"
 			"                                serialized by NTFS and antivirus scanning; faster filesystems may take more)\n"
 			"  --overwrite                   Rebuild cache files that already exist\n"
-			"  --write-empty-cells           Also write a cache file for cells with no grass (by default they get none)\n"
+			"  --write-empty-cells           Write NGIO's 4-byte cache file for cells with no grass, so the game does\n"
+			"                                not generate their grass at runtime. Default: written unless NGIO only\n"
+			"                                loads from the cache (Use-grass-cache and Only-load-from-cache)\n"
+			"  --skip-empty-cells            Write no cache file for cells with no grass\n"
 			"  --no-blade-cap                Keep more than the game's 8191 blades of a grass type per cell quadrant\n"
 			"                                (by default the excess is thinned evenly; the game drops it unevenly)\n"
 			"\n"
@@ -204,6 +207,8 @@ namespace FasterNGIO::App
 				options.overwrite = true;
 			} else if (arg == "--write-empty-cells") {
 				options.skipEmptyCells = false;
+			} else if (arg == "--skip-empty-cells") {
+				options.skipEmptyCells = true;
 			} else if (arg == "--no-blade-cap") {
 				options.capQuadrantBlades = false;
 			} else if (arg == "--reject") {

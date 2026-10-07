@@ -39,9 +39,11 @@ namespace FasterNGIO::Grass
 
 			AppendU32(output, std::bit_cast<std::uint32_t>(group.wavePeriod));
 			AppendU32(output, group.grassFormID);
-			output.push_back(group.vertexLighting ? 1 : 0);
-			output.push_back(group.uniformScaling ? 1 : 0);
+			// The engine's order (fit to slope, uniform scale, vertex lighting): its writer stores the
+			// shader property's bits 44, 43, 42 and its reader sets them back in that order.
 			output.push_back(group.fitToSlope ? 1 : 0);
+			output.push_back(group.uniformScaling ? 1 : 0);
+			output.push_back(group.vertexLighting ? 1 : 0);
 			AppendU32(output, static_cast<std::uint32_t>(group.blocks.size()));
 
 			for (const auto& block : group.blocks) {

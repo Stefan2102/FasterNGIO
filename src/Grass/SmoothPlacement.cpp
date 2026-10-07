@@ -307,7 +307,7 @@ namespace FasterNGIO::Grass
 			}
 			const auto step = GameData::kSkyrimTerrainCellSize / static_cast<float>(latticeSide);
 			const auto groupIndex = static_cast<std::uint32_t>(result.groups.size());
-			result.groups.push_back(CellGrassGroup{ .grass = std::addressof(grass), .modelPath = GameData::NormalizeModelPath(grass.modelPath) });
+			result.groups.push_back(CellGrassGroup{ .grass = std::addressof(grass), .modelPath = GameData::GrassCacheModelPath(grass.modelPath) });
 			CounterRng rng(GameData::PackCellCoords(cellX, cellY) ^ (static_cast<std::uint64_t>(grass.formID.value) * kGoldenGamma));
 			const auto density = static_cast<float>(grass.density) * kDensityPercent * (smooth.field ? smooth.field->DensityScale(grass.formID) : 1.0f);
 

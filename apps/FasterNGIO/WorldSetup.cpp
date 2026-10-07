@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <format>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -41,26 +42,54 @@ namespace FasterNGIO::App
 		return shapes;
 	}
 
+	namespace
+	{
+		struct GameIniSources
+		{
+			std::optional<Grass::GameIniDirectory> directory;
+			// The engine's Skyrim.ini collection, in reading order: the folder's INIs, then the plugins'.
+			std::vector<std::filesystem::path> files;
+			std::size_t pluginInis{ 0 };
+		};
+
+		[[nodiscard]] GameIniSources LocateGameInis(const GenerateOptions& a_options)
+		{
+			GameIniSources sources;
+			sources.directory = Grass::LocateGameIniDirectory(a_options.pluginsTxtPath, a_options.dataPath, a_options.gameIniDirectory);
+			if (!sources.directory && a_options.gameIniDirectory) {
+				throw std::invalid_argument("the game INI folder is not a folder: " + a_options.gameIniDirectory->string());
+			}
+			const auto pluginInis = Grass::PluginIniFiles(a_options.dataPath, a_options.pluginsTxtPath);
+			sources.pluginInis = pluginInis.size();
+			sources.files = Grass::SkyrimIniFiles(sources.directory ? std::optional(sources.directory->path) : std::nullopt, pluginInis);
+			return sources;
+		}
+	}
+
 	Grass::PlacementSettings ResolvePlacementSettings(const GenerateOptions& a_options)
 	{
 		auto settings = a_options.placement;
 		if (a_options.readGameIni) {
-			if (const auto directory = Grass::LocateGameIniDirectory(a_options.pluginsTxtPath, a_options.dataPath, a_options.gameIniDirectory)) {
-				const auto ini = Grass::ReadGrassIniSettings(directory->path);
-				Grass::ApplyGrassIniSettings(ini, settings);
-				if (ini.filesRead.empty()) {
-					spdlog::info("game INI: no Skyrim.ini in {} ({}); using engine defaults", directory->path.string(), directory->origin);
-				} else {
-					spdlog::info("game INI: {} ({})", directory->path.string(), directory->origin);
-				}
-				const auto describe = [](const auto& a_value) { return a_value ? std::format("{} ({})", a_value->value, a_value->source.filename().string()) : std::string("engine default"); };
-				spdlog::info("game INI [Grass]: iMinGrassSize={} iMaxGrassTypesPerTexure={} fTexturePctThreshold={}", describe(ini.minGrassSize),
-					describe(ini.maxGrassTypesPerTexture), describe(ini.texturePctThreshold));
-			} else if (a_options.gameIniDirectory) {
-				throw std::invalid_argument("the game INI folder is not a folder: " + a_options.gameIniDirectory->string());
+			const auto sources = LocateGameInis(a_options);
+			const auto ini = Grass::ReadGrassIniSettings(sources.files);
+			Grass::ApplyGrassIniSettings(ini, settings);
+			if (!sources.directory) {
+				spdlog::info("game INI: no INI folder found");
+			} else if (sources.files.size() == sources.pluginInis) {
+				spdlog::info("game INI: no Skyrim.ini in {} ({})", sources.directory->path.string(), sources.directory->origin);
 			} else {
-				spdlog::info("game INI: none found; using engine defaults");
+				spdlog::info("game INI: {} ({})", sources.directory->path.string(), sources.directory->origin);
 			}
+			if (sources.pluginInis != 0) {
+				std::string names;
+				for (auto it = sources.files.end() - static_cast<std::ptrdiff_t>(sources.pluginInis); it != sources.files.end(); ++it) {
+					names += (names.empty() ? "" : ", ") + it->filename().string();
+				}
+				spdlog::info("game INI: {} plugin INI(s) in Data, read after it: {}", sources.pluginInis, names);
+			}
+			const auto describe = [](const auto& a_value) { return a_value ? std::format("{} ({})", a_value->value, a_value->source.filename().string()) : std::string("engine default"); };
+			spdlog::info("game INI [Grass]: iMinGrassSize={} iMaxGrassTypesPerTexure={} fTexturePctThreshold={}", describe(ini.minGrassSize),
+				describe(ini.maxGrassTypesPerTexture), describe(ini.texturePctThreshold));
 		}
 		// NGIO's Ensure-max-grass-types-setting raises the INI's value; the command line still wins.
 		if (a_options.ensureMaxGrassTypes) {
@@ -130,12 +159,10 @@ namespace FasterNGIO::App
 	{
 		Archives::ArchiveIniLists ini;
 		if (a_options.readGameIni) {
-			if (const auto directory = Grass::LocateGameIniDirectory(a_options.pluginsTxtPath, a_options.dataPath, a_options.gameIniDirectory)) {
-				ini = Grass::ReadArchiveIniLists(directory->path);
-				if (ini.resourceArchiveList || ini.resourceArchiveList2) {
-					const auto describe = [](const auto& a_list) { return a_list ? std::format("{} archive(s)", a_list->size()) : std::string("default"); };
-					spdlog::info("game INI [Archive]: sResourceArchiveList={} sResourceArchiveList2={}", describe(ini.resourceArchiveList), describe(ini.resourceArchiveList2));
-				}
+			ini = Grass::ReadArchiveIniLists(LocateGameInis(a_options).files);
+			if (ini.resourceArchiveList || ini.resourceArchiveList2) {
+				const auto describe = [](const auto& a_list) { return a_list ? std::format("{} archive(s)", a_list->size()) : std::string("default"); };
+				spdlog::info("game INI [Archive]: sResourceArchiveList={} sResourceArchiveList2={}", describe(ini.resourceArchiveList), describe(ini.resourceArchiveList2));
 			}
 		}
 		return Archives::ArchiveResolver(a_options.dataPath, Archives::DefaultArchiveOrder(a_plugins.loadOrder, ini));

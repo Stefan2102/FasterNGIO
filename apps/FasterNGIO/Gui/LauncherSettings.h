@@ -24,8 +24,8 @@ namespace FasterNGIO::Gui
 		Grass::PlacementMode placement{ Grass::PlacementMode::Smooth };
 		App::RejectChoice rejection{ App::RejectChoice::Auto };
 		bool overwrite{ false };
-		// GenerateOptions::skipEmptyCells.
-		bool skipEmptyCells{ true };
+		// GenerateOptions::skipEmptyCells: unset follows NGIO's settings.
+		std::optional<bool> skipEmptyCells;
 		// GenerateOptions::capQuadrantBlades.
 		bool capQuadrantBlades{ true };
 		// Experimental: GenerateOptions::renderGeometry.

@@ -6,6 +6,8 @@
 
 #include <oneapi/tbb/parallel_for.h>
 
+#include <algorithm>
+#include <format>
 #include <fstream>
 #include <stdexcept>
 #include <string_view>
@@ -96,8 +98,16 @@ namespace FasterNGIO::GameData
 				}
 				entry.fileID = FileID{ .kind = ModuleKind::Light, .slot = lightSlot++ };
 			} else {
+				// The game has no limit check: it gives a full plugin its position in the load order
+				// truncated to a byte, so the 255th lands in 0xFE (light plugins), the 256th in 0xFF
+				// (runtime forms) and later ones wrap onto Skyrim.esm and on. There is no load order
+				// to reproduce, and skipping the excess would describe a game that does not exist.
 				if (fullSlot > 0xFDu) {
-					throw std::runtime_error("too many full plugins");
+					const auto full = std::ranges::count_if(a_entries, [](const LoadOrderEntry& a_entry) { return a_entry.kind != ModuleKind::Light; });
+					throw std::runtime_error(std::format(
+						"too many full plugins: {} enabled, the game supports 254 ({} is the first past the limit). "
+						"Disable plugins or ESL-flag them, or the game itself will misread their forms",
+						full, entry.path.filename().string()));
 				}
 				entry.fileID = FileID{ .kind = ModuleKind::Full, .slot = fullSlot++ };
 			}

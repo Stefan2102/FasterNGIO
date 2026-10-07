@@ -721,9 +721,20 @@ namespace FasterNGIO::Gui
 					ImGui::TextUnformatted("Game INI folder (Skyrim.ini's [Grass] settings):");
 					const auto iniHint = _install ? Utf8(_install->iniDirectory) : std::string("derived from the game folder");
 					FolderField("##ini", _inputs.gameIniFolder, iniHint.c_str(), "Choose the folder with Skyrim.ini");
-					ImGui::Checkbox("Skip writing empty cache files", &_inputs.skipEmptyCells);
+					ImGui::AlignTextToFramePadding();
+					ImGui::TextUnformatted("Cells with no grass:");
+					ImGui::SameLine();
+					constexpr const char* kEmptyCells[] = { "Automatic (from NGIO's settings)", "Write an empty cache file", "Write no file" };
+					int emptyCells = !_inputs.skipEmptyCells ? 0 : *_inputs.skipEmptyCells ? 2 : 1;
+					ImGui::SetNextItemWidth(-FLT_MIN);
+					if (ImGui::Combo("##emptycells", &emptyCells, kEmptyCells, IM_ARRAYSIZE(kEmptyCells))) {
+						_inputs.skipEmptyCells = emptyCells == 0 ? std::nullopt : std::optional<bool>(emptyCells == 2);
+					}
 					if (ImGui::IsItemHovered()) {
-						ImGui::SetTooltip("Cells left with no grass get no .cgid file instead of a 4-byte empty one.");
+						ImGui::SetTooltip(
+							"Without a cache file the game generates a cell's grass itself, every time it loads, unless NGIO\n"
+							"only loads from the cache (Use-grass-cache and Only-load-from-cache). Automatic writes NGIO's\n"
+							"4-byte empty file unless it does.");
 					}
 					ImGui::Checkbox("Limit grass to the game's 8191 blades per type and cell quadrant", &_inputs.capQuadrantBlades);
 					if (ImGui::IsItemHovered()) {
