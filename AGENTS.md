@@ -116,6 +116,12 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   taken from the parent while PNAM's Use Land Data bit is set; any other cell has no water (-FLT_MAX).
   Most exterior cells have no XCLW, so the worldspace default (Tamriel's -14000) decides the coast.
   Only water states 0-5 are tested; 6 and 7 place regardless (`PassesWaterFilter`).
+- **Partial forms add, they don't replace.** A WRLD or CELL record flagged 0x4000 (partial form) that
+  overrides an existing form goes through `LoadPartial` (`FUN_1401bbaa0` picks it for parent forms),
+  which reads only a worldspace's map bounds and nothing of a cell; with no earlier version the record
+  is skipped. `ParseRecord` therefore takes nothing from such a record but its children. SR Exterior
+  Cities' EDID-only partial Tamriel otherwise drops DNAM, putting the default water at 0 and most of
+  Skyrim's land underwater.
 - **Land is the engine's.** `TESObjectLAND::Load` takes VHGT only after a DATA with bit 0 and VCLR
   only after one with bit 1 (no DATA: flags 0). A LAND without heights keeps the worldspace's DNAM
   default land height (-2048 without one, through the parent like water, `LandDataWorld`) at every

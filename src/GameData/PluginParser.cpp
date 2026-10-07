@@ -65,6 +65,20 @@ namespace FasterNGIO::GameData
 				return;
 			}
 
+			// A partial WRLD or CELL override goes through LoadPartial, which reads none of the fields
+			// FasterNGIO uses (TESWorldSpace's reads only the map bounds; TESObjectCELL has none), so
+			// the earlier version's data stands; with no earlier version the engine skips the record.
+			// Its children (LAND, references) still load as usual. SR Exterior Cities' partial
+			// Tamriel, with only an EDID, otherwise took DNAM's -14000 water height down to 0.
+			if (header.IsPartialForm() && (header.signature == kSigWrld || header.signature == kSigCell)) {
+				if (header.signature == kSigWrld) {
+					a_context.currentWorld = formID;
+				} else {
+					a_context.currentCell = formID;
+				}
+				return;
+			}
+
 			const RecordContext record{
 				.header = header,
 				.formID = formID,

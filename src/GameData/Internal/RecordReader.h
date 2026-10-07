@@ -69,6 +69,8 @@ namespace FasterNGIO::GameData::Internal
 	inline constexpr std::size_t kRecordHeaderSize = 24;
 	inline constexpr std::uint32_t kRecordFlagDeleted = 1u << 5;
 	inline constexpr std::uint32_t kRecordFlagIgnored = 1u << 12;
+	// On WRLD and CELL (the engine's parent forms): an override that only adds to the form.
+	inline constexpr std::uint32_t kRecordFlagPartialForm = 1u << 14;
 	inline constexpr std::uint32_t kRecordFlagCompressed = 1u << 18;
 	inline constexpr std::uint32_t kTes4FlagLight = 1u << 9;
 
@@ -104,6 +106,7 @@ namespace FasterNGIO::GameData::Internal
 
 		[[nodiscard]] bool IsSuppressed() const { return (flags & (kRecordFlagDeleted | kRecordFlagIgnored)) != 0; }
 		[[nodiscard]] bool IsCompressed() const { return (flags & kRecordFlagCompressed) != 0; }
+		[[nodiscard]] bool IsPartialForm() const { return (flags & kRecordFlagPartialForm) != 0; }
 	};
 
 	[[nodiscard]] RecordHeader ReadRecordHeader(std::span<const std::uint8_t> a_bytes, std::size_t a_offset);

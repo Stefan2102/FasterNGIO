@@ -197,8 +197,22 @@ namespace
 		PluginWriter ltex;
 		ltex.Record("LTEX", 0x000801, {}, kDeleted);
 
+		// Partial forms (0x4000), as SR Exterior Cities writes them: Tamriel with only an EDID, cell
+		// 0x900 with nothing of its own, and a worldspace with no earlier version. None of them
+		// changes what the engine keeps.
+		constexpr std::uint32_t kPartialForm = 1u << 14;
+		PluginWriter partialCell;
+		partialCell.Record("CELL", 0x000900, PluginWriter{}.Sub("EDID", Z("Partial")).Data(), kPartialForm);
+		PluginWriter world;
+		world.Record("WRLD", 0x00003C, PluginWriter{}.Sub("EDID", Z("Tamriel")).Data(), kPartialForm)
+			.Group(0x00003C, 1, partialCell.Data())
+			.Record("WRLD", 0x01000E00, PluginWriter{}.Sub("EDID", Z("Orphan")).Data(), kPartialForm);
+
 		PluginWriter plugin;
-		plugin.Bytes(Tes4(3, { "Base.esm" })).Group(Label("GRAS"), 0, grass.Data()).Group(Label("LTEX"), 0, ltex.Data());
+		plugin.Bytes(Tes4(3, { "Base.esm" }))
+			.Group(Label("GRAS"), 0, grass.Data())
+			.Group(Label("LTEX"), 0, ltex.Data())
+			.Group(Label("WRLD"), 0, world.Data());
 		return plugin.Data();
 	}
 
@@ -325,6 +339,9 @@ TEST(GameData, ResolvesOverridesDeletionsAndCompressedRecords)
 	EXPECT_TRUE(child.UsesParentLandData());
 	EXPECT_EQ(child.defaultWaterHeight, 0.0f);
 	EXPECT_EQ(tamriel.defaultLandHeight, -1000.0f);
+	// The patch's partial forms keep the earlier versions, and one with no earlier version is skipped.
+	EXPECT_FALSE(snapshot.worldsByFormID.contains(FormID{ 0x01000E00 }));
+	EXPECT_EQ(cell.worldFormID, FormID{ 0x3C });
 	EXPECT_EQ(child.defaultLandHeight, -2048.0f);
 
 	// LAND as the engine loads it: VHGT and VCLR count only after DATA's bits 0 and 1, and a LAND
