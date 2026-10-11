@@ -1,5 +1,7 @@
 #include "Platform/DataDirectory.h"
 
+#include "Platform/Text.h"
+
 #include <algorithm>
 #include <cctype>
 #include <system_error>
@@ -25,7 +27,7 @@ namespace FasterNGIO::Platform
 	{
 		std::error_code error;
 #if defined(_WIN32)
-		auto path = a_directory / std::filesystem::path(std::string(a_name));
+		auto path = a_directory / Platform::PathFromGameText(a_name);
 		if (std::filesystem::exists(path, error)) {
 			return path;
 		}
@@ -60,7 +62,7 @@ namespace FasterNGIO::Platform
 	std::optional<std::filesystem::path> DataDirectory::Find(std::string_view a_relative) const
 	{
 #if defined(_WIN32)
-		auto path = _root / std::filesystem::path(std::string(a_relative));
+		auto path = _root / Platform::PathFromGameText(a_relative);
 		std::error_code error;
 		if (std::filesystem::is_regular_file(path, error)) {
 			return path;

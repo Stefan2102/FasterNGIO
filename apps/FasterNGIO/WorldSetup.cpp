@@ -1,4 +1,5 @@
 #include "WorldSetup.h"
+#include "Platform/Text.h"
 
 #include "Grass/CellCache.h"
 #include "Grass/GameIni.h"
@@ -76,18 +77,18 @@ namespace FasterNGIO::App
 			if (!sources.directory) {
 				spdlog::info("game INI: no INI folder found");
 			} else if (sources.files.size() == sources.pluginInis) {
-				spdlog::info("game INI: no Skyrim.ini in {} ({})", sources.directory->path.string(), sources.directory->origin);
+				spdlog::info("game INI: no Skyrim.ini in {} ({})", Platform::Utf8(sources.directory->path), sources.directory->origin);
 			} else {
-				spdlog::info("game INI: {} ({})", sources.directory->path.string(), sources.directory->origin);
+				spdlog::info("game INI: {} ({})", Platform::Utf8(sources.directory->path), sources.directory->origin);
 			}
 			if (sources.pluginInis != 0) {
 				std::string names;
 				for (auto it = sources.files.end() - static_cast<std::ptrdiff_t>(sources.pluginInis); it != sources.files.end(); ++it) {
-					names += (names.empty() ? "" : ", ") + it->filename().string();
+					names += (names.empty() ? "" : ", ") + Platform::Utf8(it->filename());
 				}
 				spdlog::info("game INI: {} plugin INI(s) in Data, read after it: {}", sources.pluginInis, names);
 			}
-			const auto describe = [](const auto& a_value) { return a_value ? std::format("{} ({})", a_value->value, a_value->source.filename().string()) : std::string("engine default"); };
+			const auto describe = [](const auto& a_value) { return a_value ? std::format("{} ({})", a_value->value, Platform::Utf8(a_value->source.filename())) : std::string("engine default"); };
 			spdlog::info("game INI [Grass]: iMinGrassSize={} iMaxGrassTypesPerTexure={} fTexturePctThreshold={}", describe(ini.minGrassSize),
 				describe(ini.maxGrassTypesPerTexture), describe(ini.texturePctThreshold));
 		}

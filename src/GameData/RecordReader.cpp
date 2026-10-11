@@ -152,19 +152,19 @@ namespace FasterNGIO::GameData::Internal
 	{
 		std::ifstream input(a_path, std::ios::binary);
 		if (!input) {
-			throw std::runtime_error("failed to open plugin file: " + a_path.string());
+			throw std::runtime_error("failed to open plugin file: " + Platform::Utf8(a_path));
 		}
 		std::array<std::uint8_t, kRecordHeaderSize> headerBytes{};
 		input.read(reinterpret_cast<char*>(headerBytes.data()), static_cast<std::streamsize>(headerBytes.size()));
 		if (input.gcount() != static_cast<std::streamsize>(headerBytes.size())) {
-			throw std::runtime_error("plugin is too small: " + a_path.string());
+			throw std::runtime_error("plugin is too small: " + Platform::Utf8(a_path));
 		}
 		const auto tes4 = ReadTes4Header(headerBytes, a_path);
 		std::vector<std::uint8_t> data(tes4.dataSize);
 		if (!data.empty()) {
 			input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(data.size()));
 			if (input.gcount() != static_cast<std::streamsize>(data.size())) {
-				throw std::runtime_error("TES4 header data exceeds file size: " + a_path.string());
+				throw std::runtime_error("TES4 header data exceeds file size: " + Platform::Utf8(a_path));
 			}
 		}
 
@@ -185,11 +185,11 @@ namespace FasterNGIO::GameData::Internal
 	RecordHeader ReadTes4Header(std::span<const std::uint8_t> a_bytes, const std::filesystem::path& a_path)
 	{
 		if (a_bytes.size() < kRecordHeaderSize) {
-			throw std::runtime_error("plugin is too small: " + a_path.string());
+			throw std::runtime_error("plugin is too small: " + Platform::Utf8(a_path));
 		}
 		const auto header = ReadRecordHeader(a_bytes, 0);
 		if (header.signature != kSigTes4) {
-			throw std::runtime_error("plugin does not start with TES4 header: " + a_path.string());
+			throw std::runtime_error("plugin does not start with TES4 header: " + Platform::Utf8(a_path));
 		}
 		return header;
 	}

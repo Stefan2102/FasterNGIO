@@ -82,7 +82,7 @@ namespace FasterNGIO::Platform
 		// <library>/steamapps/common/<game>
 		const auto common = a_gameRoot.lexically_normal().parent_path();
 		const auto steamapps = common.parent_path();
-		if (!IEquals(common.filename().string(), "common") || !IEquals(steamapps.filename().string(), "steamapps")) {
+		if (!IEquals(Platform::Utf8(common.filename()), "common") || !IEquals(Platform::Utf8(steamapps.filename()), "steamapps")) {
 			return std::nullopt;
 		}
 		const auto compatdata = FindInDirectory(steamapps, "compatdata");
@@ -106,7 +106,7 @@ namespace FasterNGIO::Platform
 		if (!root.has_filename()) {
 			root = root.parent_path();
 		}
-		if (!FindInDirectory(root, "SkyrimSE.exe") && IEquals(root.filename().string(), "Data") && FindInDirectory(root.parent_path(), "SkyrimSE.exe")) {
+		if (!FindInDirectory(root, "SkyrimSE.exe") && IEquals(Platform::Utf8(root.filename()), "Data") && FindInDirectory(root.parent_path(), "SkyrimSE.exe")) {
 			root = root.parent_path();
 		}
 		if (!FindInDirectory(root, "SkyrimSE.exe")) {

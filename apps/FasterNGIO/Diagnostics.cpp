@@ -1,6 +1,7 @@
 #include "Diagnostics.h"
 
 #include "WorldSetup.h"
+#include "Platform/Text.h"
 
 #include "Collision/NifCollisionExtractor.h"
 #include "Collision/ObjExport.h"
@@ -205,7 +206,7 @@ namespace FasterNGIO::App
 			});
 			std::ofstream output(a_options.exportBladesPath, std::ios::binary);
 			if (!output) {
-				throw std::runtime_error("cannot write " + a_options.exportBladesPath.string());
+				throw std::runtime_error("cannot write " + Platform::Utf8(a_options.exportBladesPath));
 			}
 			std::uint64_t blades = 0;
 			for (const auto& cell : cells) {
@@ -217,7 +218,7 @@ namespace FasterNGIO::App
 					++blades;
 				}
 			}
-			spdlog::info("exported {} blade(s) from {} cell(s) to {} in {:.2f}s", blades, cells.size(), a_options.exportBladesPath.string(), SecondsSince(begin));
+			spdlog::info("exported {} blade(s) from {} cell(s) to {} in {:.2f}s", blades, cells.size(), Platform::Utf8(a_options.exportBladesPath), SecondsSince(begin));
 			return 0;
 		}
 

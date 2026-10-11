@@ -1,4 +1,5 @@
 #include "Collision/ObjExport.h"
+#include "Platform/Text.h"
 
 #include <format>
 #include <fstream>
@@ -10,7 +11,7 @@ namespace FasterNGIO::Collision
 	{
 		std::ofstream output(a_path);
 		if (!output) {
-			throw std::runtime_error("failed to open " + a_path.string());
+			throw std::runtime_error("failed to open " + Platform::Utf8(a_path));
 		}
 		std::size_t vertexCount = 0;
 		const auto writeTriangles = [&](const char* a_group, const std::vector<Triangle>& a_triangles) {

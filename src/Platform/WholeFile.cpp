@@ -1,5 +1,7 @@
 #include "Platform/WholeFile.h"
 
+#include "Platform/Text.h"
+
 #include <algorithm>
 #include <atomic>
 #include <fstream>
@@ -38,7 +40,7 @@ namespace FasterNGIO::Platform
 			const DWORD flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN | (a_atCreate ? FILE_FLAG_DELETE_ON_CLOSE : 0);
 			const HANDLE file = CreateFileW(a_path.c_str(), GENERIC_WRITE | DELETE, 0, nullptr, CREATE_ALWAYS, flags, nullptr);
 			if (file == INVALID_HANDLE_VALUE) {
-				throw std::runtime_error("cannot create " + a_path.string() + " (error " + std::to_string(GetLastError()) + ")");
+				throw std::runtime_error("cannot create " + Platform::Utf8(a_path) + " (error " + std::to_string(GetLastError()) + ")");
 			}
 			const auto setDeleteOnClose = [&](bool a_delete) {
 				FILE_DISPOSITION_INFO disposition{ .DeleteFile = static_cast<BOOLEAN>(a_delete) };
@@ -66,7 +68,7 @@ namespace FasterNGIO::Platform
 			}
 			CloseHandle(file);
 			if (!ok) {
-				throw std::runtime_error("cannot write " + a_path.string() + " (error " + std::to_string(error) + ")");
+				throw std::runtime_error("cannot write " + Platform::Utf8(a_path) + " (error " + std::to_string(error) + ")");
 			}
 			return kept;
 		}

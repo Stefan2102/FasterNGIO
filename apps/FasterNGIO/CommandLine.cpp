@@ -1,7 +1,10 @@
 #include "CommandLine.h"
 
+#include "Options.h"
+
 #include "Platform/GameInstall.h"
 #include "Platform/ModOrganizer.h"
+#include "Platform/Text.h"
 
 #include <spdlog/spdlog.h>
 
@@ -158,11 +161,11 @@ namespace FasterNGIO::App
 			if (arg == "--help" || arg == "-h") {
 				return std::nullopt;
 			} else if (arg == "--data") {
-				options.dataPath = requireValue(arg);
+				options.dataPath = Platform::PathFromUtf8(requireValue(arg));
 			} else if (arg == "--plugins") {
-				options.pluginsTxtPath = requireValue(arg);
+				options.pluginsTxtPath = Platform::PathFromUtf8(requireValue(arg));
 			} else if (arg == "--out") {
-				options.outputDirectory = requireValue(arg);
+				options.outputDirectory = Platform::PathFromUtf8(requireValue(arg));
 			} else if (arg == "--world") {
 				if (const auto value = requireValue(arg); value == "all") {
 					options.allWorlds = true;
@@ -253,7 +256,7 @@ namespace FasterNGIO::App
 					throw std::invalid_argument("expected --seasons auto, on or off");
 				}
 			} else if (arg == "--dump-season-swaps") {
-				options.dumpSeasonSwapsPath = requireValue(arg);
+				options.dumpSeasonSwapsPath = Platform::PathFromUtf8(requireValue(arg));
 			} else if (arg == "--render-geometry") {
 				options.renderGeometry = true;
 			} else if (arg == "--validate-cpu") {
@@ -292,24 +295,24 @@ namespace FasterNGIO::App
 			} else if (arg == "--smooth-density-bias") {
 				options.placement.smooth.densityBias = ParseFloat(requireValue(arg));
 			} else if (arg == "--game-ini-dir") {
-				options.gameIniDirectory = std::filesystem::path(requireValue(arg));
+				options.gameIniDirectory = Platform::PathFromUtf8(requireValue(arg));
 			} else if (arg == "--no-game-ini") {
 				options.readGameIni = false;
 			} else if (arg == "--ngio-config") {
 				const auto value = requireValue(arg);
-				options.ngioConfig = value == "none" ? std::filesystem::path{} : std::filesystem::path(value);
+				options.ngioConfig = value == "none" ? std::filesystem::path{} : Platform::PathFromUtf8(value);
 			} else if (arg == "--smooth-warp") {
 				options.placement.smooth.warpAmplitude = ParseFloat(requireValue(arg));
 				options.placement.smooth.warpWavelength = ParseFloat(requireValue(arg));
 			} else if (arg == "--export-blades") {
-				options.exportBladesPath = requireValue(arg);
+				options.exportBladesPath = Platform::PathFromUtf8(requireValue(arg));
 			} else if (arg == "--benchmark-rejection") {
 				options.benchmarkRejection = true;
 			} else if (arg == "--collision-survey") {
 				options.collisionSurvey = true;
 			} else if (arg == "--dump-collision") {
 				options.dumpCollisionModel = requireValue(arg);
-				options.dumpCollisionPath = requireValue(arg);
+				options.dumpCollisionPath = Platform::PathFromUtf8(requireValue(arg));
 			} else {
 				throw std::invalid_argument("unknown argument: " + std::string(arg));
 			}

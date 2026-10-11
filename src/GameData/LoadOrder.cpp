@@ -28,7 +28,7 @@ namespace FasterNGIO::GameData
 	{
 		std::ifstream input(a_pluginsTxtPath);
 		if (!input) {
-			throw std::runtime_error("failed to open plugins.txt: " + a_pluginsTxtPath.string());
+			throw std::runtime_error("failed to open plugins.txt: " + Platform::Utf8(a_pluginsTxtPath));
 		}
 
 		std::vector<LoadOrderEntry> result;
@@ -78,10 +78,10 @@ namespace FasterNGIO::GameData
 	{
 		oneapi::tbb::parallel_for(std::size_t{ 0 }, a_entries.size(), [&](std::size_t i) {
 			auto& entry = a_entries[i];
-			entry.pluginName = entry.pluginName.empty() ? Platform::LowerAscii(entry.path.filename().string()) : Platform::LowerAscii(entry.pluginName);
+			entry.pluginName = entry.pluginName.empty() ? Platform::LowerAscii(Platform::Utf8(entry.path.filename())) : Platform::LowerAscii(entry.pluginName);
 			const auto header = Internal::ReadPluginHeader(entry.path);
 			entry.recordCount = header.recordCount;
-			const bool light = Platform::LowerAscii(entry.path.extension().string()) == ".esl" || (header.flags & Internal::kTes4FlagLight) != 0;
+			const bool light = Platform::LowerAscii(Platform::Utf8(entry.path.extension())) == ".esl" || (header.flags & Internal::kTes4FlagLight) != 0;
 			entry.kind = light ? ModuleKind::Light : ModuleKind::Full;
 			entry.masters.clear();
 			for (const auto& master : header.masters) {
@@ -107,7 +107,7 @@ namespace FasterNGIO::GameData
 					throw std::runtime_error(std::format(
 						"too many full plugins: {} enabled, the game supports 254 ({} is the first past the limit). "
 						"Disable plugins or ESL-flag them, or the game itself will misread their forms",
-						full, entry.path.filename().string()));
+						full, Platform::Utf8(entry.path.filename())));
 				}
 				entry.fileID = FileID{ .kind = ModuleKind::Full, .slot = fullSlot++ };
 			}

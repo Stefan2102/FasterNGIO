@@ -1,6 +1,7 @@
 #include "Gpu/GpuShaders.h"
 
 #include "Gpu/GpuRejector.h"
+#include "Platform/Text.h"
 
 #if FASTERNGIO_RUNTIME_SHADER_COMPILER
 #include <ORGModuleServices/ShaderCompiler.h>
@@ -43,14 +44,14 @@ namespace FasterNGIO::Gpu
 		const auto shaderPath = a_desc.shaderDirectory / "GrassRejection.hlsl";
 		const auto source = ReadFile(shaderPath);
 		if (!source) {
-			throw std::runtime_error("GPU: cannot read " + shaderPath.string());
+			throw std::runtime_error("GPU: cannot read " + Platform::Utf8(shaderPath));
 		}
 		org::services::ShaderCompiler compiler(a_desc.cacheDirectory);
 		if (!compiler.Available()) {
 			throw GpuUnsupportedError("the DXC shader compiler (dxcompiler) is not available");
 		}
 		org::services::ShaderCompileRequest request{};
-		request.sourceName = shaderPath.string();
+		request.sourceName = Platform::Utf8(shaderPath);
 		request.source = std::as_bytes(std::span(*source));
 		request.target = L"lib_6_6";
 		request.format = a_desc.api == GpuApi::Vulkan ? org::services::ShaderBinaryFormat::Spirv : org::services::ShaderBinaryFormat::Dxil;
@@ -78,10 +79,10 @@ namespace FasterNGIO::Gpu
 		const auto shaderPath = a_desc.shaderDirectory / (name + ".spv");
 		const auto binary = ReadFile(shaderPath);
 		if (!binary) {
-			throw GpuUnsupportedError("missing precompiled shader " + shaderPath.string());
+			throw GpuUnsupportedError("missing precompiled shader " + Platform::Utf8(shaderPath));
 		}
 		if (binary->empty() || binary->size() % 4 != 0) {
-			throw std::runtime_error("GPU: " + shaderPath.string() + " is not SPIR-V");
+			throw std::runtime_error("GPU: " + Platform::Utf8(shaderPath) + " is not SPIR-V");
 		}
 		const auto bytes = std::as_bytes(std::span(*binary));
 		return { bytes.begin(), bytes.end() };

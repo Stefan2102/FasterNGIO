@@ -227,7 +227,7 @@ namespace FasterNGIO::Pipeline
 			[[nodiscard]] std::filesystem::path CellPath(std::uint32_t a_cell, std::size_t a_name = 0) const
 			{
 				const auto& land = *_desc.lands[a_cell];
-				return _desc.outputDirectory / Grass::MakeNgioCacheFileName(_desc.worldEditorID, *land.cellX, *land.cellY, _desc.fileSuffixes[a_name]);
+				return _desc.outputDirectory / Platform::PathFromGameText(Grass::MakeNgioCacheFileName(_desc.worldEditorID, *land.cellX, *land.cellY, _desc.fileSuffixes[a_name]));
 			}
 
 			[[nodiscard]] bool AllFilesExist(std::uint32_t a_cell) const
@@ -464,7 +464,7 @@ namespace FasterNGIO::Pipeline
 						if (_desc.overwrite) {
 							for (std::size_t name = 0; name < names; ++name) {
 								auto path = CellPath(a_input.cell, name);
-								if (_desc.existingFiles && !_desc.existingFiles->contains(Platform::LowerAscii(path.filename().string()))) {
+								if (_desc.existingFiles && !_desc.existingFiles->contains(Platform::LowerAscii(Platform::Utf8(path.filename())))) {
 									continue;
 								}
 								if (_desc.emptyInsteadOfRemove) {
@@ -497,7 +497,7 @@ namespace FasterNGIO::Pipeline
 					}
 					_written.fetch_add(names);
 				} catch (const std::exception& e) {
-					spdlog::error("cell {}: {}", CellPath(a_input.cell).filename().string(), e.what());
+					spdlog::error("cell {}: {}", Platform::Utf8(CellPath(a_input.cell).filename()), e.what());
 					_failed.fetch_add(1);
 				}
 				Finish(work);
