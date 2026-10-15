@@ -1,13 +1,10 @@
 #include "GameData/LoadOrder.h"
 
-#include "GameData/Internal/RecordReader.h"
+#include <tesworld/Plugins.h>
 #include "Platform/DataDirectory.h"
 #include "Platform/Text.h"
 
-#include <oneapi/tbb/parallel_for.h>
-
 #include <algorithm>
-#include <format>
 #include <fstream>
 #include <stdexcept>
 #include <string_view>
@@ -76,42 +73,6 @@ namespace FasterNGIO::GameData
 
 	std::vector<LoadOrderEntry> PrepareLoadOrder(std::vector<LoadOrderEntry> a_entries)
 	{
-		oneapi::tbb::parallel_for(std::size_t{ 0 }, a_entries.size(), [&](std::size_t i) {
-			auto& entry = a_entries[i];
-			entry.pluginName = entry.pluginName.empty() ? Platform::LowerAscii(Platform::Utf8(entry.path.filename())) : Platform::LowerAscii(entry.pluginName);
-			const auto header = Internal::ReadPluginHeader(entry.path);
-			entry.recordCount = header.recordCount;
-			const bool light = Platform::LowerAscii(Platform::Utf8(entry.path.extension())) == ".esl" || (header.flags & Internal::kTes4FlagLight) != 0;
-			entry.kind = light ? ModuleKind::Light : ModuleKind::Full;
-			entry.masters.clear();
-			for (const auto& master : header.masters) {
-				entry.masters.push_back(Platform::LowerAscii(master));
-			}
-		});
-
-		std::uint16_t fullSlot = 0;
-		std::uint16_t lightSlot = 0;
-		for (auto& entry : a_entries) {
-			if (entry.kind == ModuleKind::Light) {
-				if (lightSlot > 0x0FFFu) {
-					throw std::runtime_error("too many ESL/light plugins");
-				}
-				entry.fileID = FileID{ .kind = ModuleKind::Light, .slot = lightSlot++ };
-			} else {
-				// The game has no limit check: it gives a full plugin its position in the load order
-				// truncated to a byte, so the 255th lands in 0xFE (light plugins), the 256th in 0xFF
-				// (runtime forms) and later ones wrap onto Skyrim.esm and on. There is no load order
-				// to reproduce, and skipping the excess would describe a game that does not exist.
-				if (fullSlot > 0xFDu) {
-					const auto full = std::ranges::count_if(a_entries, [](const LoadOrderEntry& a_entry) { return a_entry.kind != ModuleKind::Light; });
-					throw std::runtime_error(std::format(
-						"too many full plugins: {} enabled, the game supports 254 ({} is the first past the limit). "
-						"Disable plugins or ESL-flag them, or the game itself will misread their forms",
-						full, Platform::Utf8(entry.path.filename())));
-				}
-				entry.fileID = FileID{ .kind = ModuleKind::Full, .slot = fullSlot++ };
-			}
-		}
-		return a_entries;
+		return tesworld::PrepareLoadOrder(std::move(a_entries));
 	}
 }

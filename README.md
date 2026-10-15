@@ -151,3 +151,20 @@ line; `--gui` opens the window too. Compiled shaders are
 cached in the same folder (`~/.cache/fasterngio` on Linux).
 
 Licensed under the GNU General Public License v3 (see `LICENSE`).
+
+## Shared world reader
+
+Initialize dependencies with `git submodule update --init --recursive`. `external/tesworld` pins
+[panthuncia/TESWorld](https://github.com/panthuncia/TESWorld); CMake builds only `tesworld::core`.
+`FASTERNGIO_TESWORLD_SOURCE_DIR` can select a development checkout. Plugin header reading, FormID
+remapping, record decoding, suppression, LAND slot selection and reference bucketing all use this
+library. FasterNGIO retains its grass triangle sampler, engine water rounding, vanilla RNG sequence,
+missing-height fallback and cache format. Grass mode explicitly preserves Skyrim's partial-form
+and LAND DATA gating rules. Update the submodule pin to take shared reader fixes.
+
+A CELL has one LAND slot even when an override introduces a different LAND FormID. Selecting an
+older slot can float grass over the winning terrain or select a texture without grass. Ignored
+records leave prior active LAND/CELL/LTEX/GRAS definitions intact; deleting them would empty cells.
+The tests cover both through the shared resolver and actual grass placement. These are plausible
+causes of reported floating or absent grass; identifying a specific report requires its load order
+and affected worldspace/cell. The migration does not establish that every such report is resolved.

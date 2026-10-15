@@ -9,7 +9,7 @@ or CommonLibSSE.
 
 | Path | Contents |
 |---|---|
-| `src/GameData/` | Plugin (ESM/ESP/ESL) reading, in the order data flows: `LoadOrder` (plugins.txt, TES4 headers, FileIDs), `PluginParser` (one plugin's records into a `StaticPluginShard`), `StaticWorld` (overrides resolved into the `StaticWorldSnapshot`). `FormID.h` and `Records.h` hold the types, `Internal/` the file format (`RecordReader`) and the per-record extractors. Only the fields placement and rejection use are read. |
+| `src/GameData/` | TESWorld adapters, in the order data flows: `LoadOrder` selects plugins.txt entries then delegates header/FileID preparation to TESWorld; `PluginParser` calls TESWorld's grass read mode into its `StaticPluginShard`; `StaticWorld` calls TESWorld's resolver and projects the result into the grass snapshot. `FormID.h` aliases shared identities; `Records.h` holds grass-specific fields. There is no second plugin decoder or override resolver. |
 | `src/Grass/` | Grass placement: `Placement.h` (settings, candidates, `GenerateCellCandidates`), `VanillaPlacement.cpp` (the engine's algorithm), `SmoothPlacement` (`SmoothWeightField` and smooth placement), `Internal/PlacementCommon.h` (terrain sampling, filters and blade encoding both share). `CellCache` turns placed blades into a cell's `.cgid` (`FinalizeCell`: the engine's blocks and quadrant cap; file names); `GrassModels` measures each GRAS model's blades per block; `NgioCacheWriter` is the format; `GameIni` the game's `[Grass]` INI settings; `LandTexture` which land textures the terrain shows where (NGIO's texture forms). |
 | `src/Archives/` | Memory-mapped BSA (v103/104/105) reader and load-order-aware resolver (loose files win). |
 | `src/Platform/` | `DataDirectory`: case-insensitive, either-separator resolution of Data paths (an index off Windows); `IniFile`; `GameInstall` (validates a game folder, detects the store build, derives plugins.txt and the INI folder); `ModOrganizer` (the MO2 instance and profile this process runs under); `UserSettings` (the launcher's remembered choices); the small shared helpers: `FileSystem` (per-user folders), `Text` (UTF-8 paths, ASCII case folding), `MappedFile`, `WholeFile`. |
@@ -23,7 +23,7 @@ or CommonLibSSE.
 | `shaders/` | `GrassRejection.hlsl` (DXIL for D3D12, SPIR-V for Vulkan), `Shared/GrassQueryMath.hlsli` (the overlap tests and segment hits) and `Shared/RejectionLayout.hlsli` (the buffer and root-constant layouts), which the C++ also compiles (`src/Rejection/HlslShim.h`). |
 | `tests/` | One file per module; `TestSupport.h` has the temp-folder and file helpers. `GameDataTests` writes tiny plugins and archives; `RejectionTests` builds synthetic worlds. |
 | `tools/` | `build_linux.sh` and `setup_linux.sh` (sharing `linux_common.sh`); `analyze_placement_edges.py`: grid-locking and corner statistics of `--export-blades` output, with a grid-free control. |
-| `external/` | Submodules: BasicRHI, OpenRenderGraph, ORGModuleServices, BasicTelemetry, volk (pinned to BasicRenderer's commits) and upstream nifly. |
+| `external/` | Submodules: BasicRHI, OpenRenderGraph, ORGModuleServices, BasicTelemetry, volk (pinned to BasicRenderer's commits), upstream nifly and TESWorld. |
 
 ## Build and test
 
@@ -119,8 +119,8 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
 - **Partial forms add, they don't replace.** A WRLD or CELL record flagged 0x4000 (partial form) that
   overrides an existing form goes through `LoadPartial` (`FUN_1401bbaa0` picks it for parent forms),
   which reads only a worldspace's map bounds and nothing of a cell; with no earlier version the record
-  is skipped. `ParseRecord` therefore takes nothing from such a record but its children. SR Exterior
-  Cities' EDID-only partial Tamriel otherwise drops DNAM, putting the default water at 0 and most of
+  is skipped. TESWorld's `enginePartialForms` resolution retains the earlier fields and still loads
+  children. SR Exterior Cities' EDID-only partial Tamriel otherwise drops DNAM, putting the default water at 0 and most of
   Skyrim's land underwater.
 - **Land is the engine's.** `TESObjectLAND::Load` takes VHGT only after a DATA with bit 0 and VCLR
   only after one with bit 1 (no DATA: flags 0). A LAND without heights keeps the worldspace's DNAM

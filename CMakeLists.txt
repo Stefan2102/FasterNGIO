@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.28)
 project(FasterNGIO VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -21,6 +21,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	# whose libstdc++ is older than the compiler that built it.
 	add_link_options(-static-libstdc++ -static-libgcc)
 endif()
+
+# Only TESWorld core is needed: plugin decoding and world resolution, without a renderer or assets.
+set(FASTERNGIO_TESWORLD_SOURCE_DIR "${PROJECT_SOURCE_DIR}/external/tesworld" CACHE PATH "TESWorld submodule or development checkout")
+if(NOT EXISTS "${FASTERNGIO_TESWORLD_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "TESWorld is missing: run git submodule update --init external/tesworld")
+endif()
+foreach(feature VFS TEXTURE ATLAS NIF RENDER GPU PROFILING)
+    set(TESWORLD_WITH_${feature} OFF CACHE BOOL "" FORCE)
+endforeach()
+set(TESWORLD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(TESWORLD_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+add_subdirectory("${FASTERNGIO_TESWORLD_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/tesworld" EXCLUDE_FROM_ALL)
 
 add_subdirectory(cmake/nifly)
 

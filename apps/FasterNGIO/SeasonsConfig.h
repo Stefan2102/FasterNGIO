@@ -13,7 +13,7 @@
 
 namespace FasterNGIO::GameData
 {
-	struct LoadOrderEntry;
+	using tesworld::LoadOrderEntry;
 	struct StaticWorldSnapshot;
 }
 

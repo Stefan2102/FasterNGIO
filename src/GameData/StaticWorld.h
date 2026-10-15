@@ -10,29 +10,7 @@
 
 namespace FasterNGIO::GameData
 {
-	// A deleted or ignored record: it hides every earlier plugin's version of the form.
-	struct StaticRecordSuppressor
-	{
-		FormID formID{};
-		FourCC signature{ 0 };
-	};
-
-	// What one plugin contributes, in file order, before overrides are resolved.
-	struct StaticPluginShard
-	{
-		LoadOrderEntry entry;
-		std::vector<BaseObjectInfo> baseObjects;
-		std::vector<LandTextureInfo> landTextures;
-		std::vector<GrassInfo> grasses;
-		std::vector<MaterialTypeInfo> materialTypes;
-		std::vector<TextureSetInfo> textureSets;
-		std::vector<MaterialObjectInfo> materialObjects;
-		std::vector<WorldInfo> worlds;
-		std::vector<CellInfo> cells;
-		std::vector<LandInfo> lands;
-		std::vector<PlacementInfo> placements;
-		std::vector<StaticRecordSuppressor> suppressors;
-	};
+	using StaticPluginShard = tesworld::StaticPluginShard;
 
 	// Parses the records FasterNGIO needs from one plugin of a prepared load order. Safe to call for
 	// several plugins at once.
@@ -63,8 +41,8 @@ namespace FasterNGIO::GameData
 	};
 
 	// Resolves the shards (in load order) the way the engine does: the last plugin's version of a
-	// form wins, and a deleted or ignored version removes it.
-	[[nodiscard]] StaticWorldSnapshot BuildStaticWorldSnapshot(std::span<const StaticPluginShard> a_shards);
+	// form wins, and a deleted version removes it. Ignored records leave earlier versions intact.
+	[[nodiscard]] StaticWorldSnapshot BuildStaticWorldSnapshot(const std::vector<StaticPluginShard>& a_shards);
 
 	// The worldspace a_world's land data (default land and water heights) comes from: itself, or its
 	// parent while PNAM's Use Land Data bit is set, as TESWorldSpace does. Null when a_world is unknown.

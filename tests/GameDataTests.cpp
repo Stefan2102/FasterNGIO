@@ -1,5 +1,6 @@
 #include "Archives/ArchiveResolver.h"
 #include "GameData/GameData.h"
+#include "Grass/Placement.h"
 #include "Platform/DataDirectory.h"
 
 #include "TestSupport.h"
@@ -442,4 +443,34 @@ TEST(DataDirectory, FindsNamesCaseInsensitively)
 	ASSERT_TRUE(found.has_value());
 	EXPECT_TRUE(std::filesystem::exists(*found));
 	EXPECT_FALSE(Platform::FindInDirectory(temp.Path(), "update.esm").has_value());
+}
+
+TEST(GameData, ReplacementLandscapeAndIgnoredOverridesKeepGrassAtWinningGroundHeight) {
+	// Exercise the exact shared shard/resolver path used by generation, then place actual blades.
+	const FormID worldID{0x800}, cellID{0x801}, grassID{0x802}, textureID{0x803};
+	GameData::StaticPluginShard base, replacement, ignored;
+	base.worlds.push_back(tesworld::WorldInfo{.formID = worldID});
+	base.cells.push_back(tesworld::CellInfo{.formID = cellID, .worldFormID = worldID, .gridX = -1, .gridY = 2});
+	base.grasses.push_back(tesworld::GrassInfo{.formID = grassID, .modelPath = "Grass/Test.nif", .density = 100});
+	base.landTextures.push_back(tesworld::LandTextureInfo{.formID = textureID, .grassFormIDs = {grassID}});
+	tesworld::LandInfo land{.formID = FormID{0x804}, .parentCell = cellID, .hasHeights = true};
+	land.heights.fill(700.0f);
+	for (std::uint8_t q = 0; q < 4; ++q)
+		land.baseTextures[q] = tesworld::LandBaseTexture{textureID, q};
+	base.lands.push_back(land);
+	land.formID = FormID{0x805};
+	land.heights.fill(120.0f);
+	replacement.lands.push_back(land); // New LAND identity, same CELL: only the new landscape exists.
+	for (const auto &[id, sig] :
+		 std::vector<std::pair<FormID, const char *>>{{cellID, "CELL"}, {grassID, "GRAS"}, {textureID, "LTEX"}, {land.formID, "LAND"}}) {
+		ignored.suppressors.push_back(tesworld::StaticRecordSuppressor{.formID = id, .signature = tesworld::FourCCFromString(sig), .flags = 0x1020});
+	}
+	const auto snapshot = GameData::BuildStaticWorldSnapshot({base, replacement, ignored});
+	const auto &lands = snapshot.landsByWorldspace.at(worldID);
+	ASSERT_EQ(lands.size(), 1u);
+	EXPECT_EQ(lands[0].formID, land.formID);
+	const auto candidates = Grass::GenerateCellCandidates(snapshot, lands[0], {});
+	ASSERT_FALSE(candidates.blades.empty());
+	for (const auto &blade : candidates.blades)
+		EXPECT_FLOAT_EQ(blade.position[2], 120.0f);
 }

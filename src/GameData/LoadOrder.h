@@ -9,17 +9,7 @@
 
 namespace FasterNGIO::GameData
 {
-	struct LoadOrderEntry
-	{
-		std::filesystem::path path;
-		// Lower-case file name ("skyrim.esm").
-		std::string pluginName;
-		ModuleKind kind{ ModuleKind::Full };
-		FileID fileID{};
-		// Lower-case master file names, as the TES4 header lists them.
-		std::vector<std::string> masters{};
-		std::uint32_t recordCount{ 0 };
-	};
+	using tesworld::LoadOrderEntry;
 
 	// The active plugins in load order, as the game builds it: the base game's masters, then
 	// Skyrim.ccc's Creation Club plugins, then the lines plugins.txt enables with '*'. Only plugins
