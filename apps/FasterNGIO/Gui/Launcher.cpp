@@ -427,7 +427,7 @@ namespace FasterNGIO::Gui
 				_summary.clear();
 				_summaryIsError = false;
 				_ranOutput = options.outputDirectory;
-				spdlog::info("generating into {}", options.outputDirectory.string());
+				spdlog::info("generating into {}", Platform::Utf8(options.outputDirectory));
 				_run = std::make_unique<BackgroundTask<App::RunResult>>(
 					[options, preloaded, progress = _progress.get()](std::stop_token a_stop) {
 						return App::Run(options, App::RunControl{ .stop = a_stop, .progress = progress, .preloaded = preloaded.get() });

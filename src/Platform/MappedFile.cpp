@@ -1,6 +1,7 @@
 #include "Platform/MappedFile.h"
 
 #include "Platform/WholeFile.h"
+#include "Platform/Text.h"
 
 #include <stdexcept>
 #include <utility>
@@ -58,7 +59,7 @@ namespace FasterNGIO::Platform
 		// Empty files cannot be mapped, and some filesystems cannot map at all: read it instead.
 		auto bytes = ReadWholeFile(a_path);
 		if (!bytes) {
-			throw std::runtime_error("failed to read " + a_path.string());
+			throw std::runtime_error("failed to read " + Platform::Utf8(a_path));
 		}
 		_owned = std::move(*bytes);
 		_bytes = _owned;

@@ -21,6 +21,9 @@ target_link_libraries(FasterNGIOApp PUBLIC FasterNGIOCore FasterNGIOPipeline)
 
 add_executable(FasterNGIO
 	Main.cpp
+	# The embedded manifest makes the ANSI code page UTF-8 (Windows 10 1903+), so the narrow CRT
+	# and any remaining std::filesystem string conversions handle non-ASCII paths.
+	FasterNGIO.app.manifest
 	Gui/BackgroundTask.h
 	Gui/Launcher.cpp
 	Gui/Launcher.h

@@ -184,7 +184,7 @@ namespace FasterNGIO::App
 			std::unordered_set<std::string> names;
 			std::error_code error;
 			for (std::filesystem::directory_iterator it(a_directory, error), end; !error && it != end; it.increment(error)) {
-				auto name = Platform::LowerAscii(it->path().filename().string());
+				auto name = Platform::LowerAscii(Platform::Utf8(it->path().filename()));
 				if (name.ends_with(".cgid")) {
 					names.insert(std::move(name));
 				}
@@ -262,7 +262,7 @@ namespace FasterNGIO::App
 				control.progress->cellsTotal.store(static_cast<std::uint32_t>(lands.size() * passes.size()), std::memory_order_relaxed);
 			}
 			std::filesystem::create_directories(options.outputDirectory);
-			spdlog::info("world {} ({:08X}): {} cell(s) -> {}", worldEditorID, a_worldFormID.value, lands.size(), options.outputDirectory.string());
+			spdlog::info("world {} ({:08X}): {} cell(s) -> {}", worldEditorID, a_worldFormID.value, lands.size(), Platform::Utf8(options.outputDirectory));
 			if (passes.size() > 1 || passes.front().suffixes.size() > 1) {
 				for (std::size_t i = 0; i < passes.size(); ++i) {
 					spdlog::info("seasons: pass {} of {}: {}", i + 1, passes.size(), DescribePass(passes[i]));
@@ -398,7 +398,7 @@ namespace FasterNGIO::App
 	{
 		const auto begin = std::chrono::steady_clock::now();
 		auto loadOrder = GameData::PrepareLoadOrder(GameData::ReadPluginsTxt(a_options.dataPath, a_options.pluginsTxtPath));
-		spdlog::info("load order: {} plugin(s) from {}", loadOrder.size(), a_options.pluginsTxtPath.string());
+		spdlog::info("load order: {} plugin(s) from {}", loadOrder.size(), Platform::Utf8(a_options.pluginsTxtPath));
 
 		std::vector<GameData::StaticPluginShard> shards(loadOrder.size());
 		oneapi::tbb::parallel_for(std::size_t{ 0 }, loadOrder.size(), [&](std::size_t i) {

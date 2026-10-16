@@ -318,7 +318,10 @@ namespace FasterNGIO::Archives
 		});
 		order.insert(order.end(), list2.begin(), list2.end());
 		for (const auto& entry : a_loadOrder) {
-			const auto stem = std::filesystem::path(entry.pluginName).stem().string();
+			// The plugin name's stem, byte-wise: these names are ASCII in practice and must not go
+			// through a code page.
+			const auto dot = entry.pluginName.find_last_of('.');
+			const auto stem = Platform::LowerAscii(dot == std::string::npos ? entry.pluginName : entry.pluginName.substr(0, dot));
 			order.push_back(stem + ".bsa");
 			order.push_back(stem + " - Textures.bsa");
 		}
