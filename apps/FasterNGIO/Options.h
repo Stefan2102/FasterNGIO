@@ -116,10 +116,11 @@ namespace FasterNGIO::App
 		bool collisionSurvey{ false };
 		bool benchmarkRejection{ false };
 		std::filesystem::path exportBladesPath;
+		std::filesystem::path inspectGrassPath;
 		std::string dumpCollisionModel;
 		std::filesystem::path dumpCollisionPath;
 
-		[[nodiscard]] bool RunsDiagnostic() const { return collisionSurvey || benchmarkRejection || !exportBladesPath.empty() || !dumpCollisionModel.empty(); }
+		[[nodiscard]] bool RunsDiagnostic() const { return collisionSurvey || benchmarkRejection || !exportBladesPath.empty() || !inspectGrassPath.empty() || !dumpCollisionModel.empty(); }
 	};
 
 	// The names the command line and the launcher's settings file use.

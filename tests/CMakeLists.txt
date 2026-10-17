@@ -27,4 +27,7 @@ add_executable(FasterNGIOTests
 fasterngio_configure_target(FasterNGIOTests)
 # zlib writes the compressed records of the test plugins.
 target_link_libraries(FasterNGIOTests PRIVATE FasterNGIOApp ZLIB::ZLIB GTest::gtest_main)
+if(FASTERNGIO_ENABLE_GPU AND WIN32)
+	fasterngio_enable_agility(FasterNGIOTests)
+endif()
 gtest_discover_tests(FasterNGIOTests DISCOVERY_MODE PRE_TEST)

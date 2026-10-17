@@ -22,6 +22,13 @@ namespace FasterNGIO::Grass
 
 	class SmoothWeightField;
 
+	// Optional per-call diagnostic counters. Each generating worker owns its own instance.
+	struct PlacementStatistics
+	{
+		std::uint64_t waterRejected{0};
+		std::uint64_t slopeRejected{0};
+	};
+
 	// Smooth placement: each blade's acceptance comes from the texture weights at its own
 	// (optionally warped) position, interpolated bilinearly from vertices merged across quadrants
 	// and cells, instead of vanilla's on/off density per 512-unit patch. Vanilla's 512-unit patch
@@ -76,6 +83,7 @@ namespace FasterNGIO::Grass
 		// counts them against iMaxGrassTypesPerTexure but places none (no RNG draws), as for a GRAS
 		// without a model; a cache group for one would make the game misread the rest of the file.
 		const std::unordered_set<GameData::FormID, GameData::FormIDHash>* unloadableGrass{ nullptr };
+		PlacementStatistics* statistics{ nullptr };
 	};
 
 	// One output group (one GRAS) of a cell, in first-use order.

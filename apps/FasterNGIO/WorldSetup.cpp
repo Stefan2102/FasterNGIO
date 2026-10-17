@@ -22,7 +22,8 @@ namespace FasterNGIO::App
 			return a_x == *a_options.singleCellX && a_y == *a_options.singleCellY;
 		}
 		if (a_options.centerCellX && a_options.centerCellY && a_options.radius) {
-			return std::abs(a_x - *a_options.centerCellX) <= *a_options.radius && std::abs(a_y - *a_options.centerCellY) <= *a_options.radius;
+			return std::abs(static_cast<std::int64_t>(a_x) - *a_options.centerCellX) <= *a_options.radius &&
+				std::abs(static_cast<std::int64_t>(a_y) - *a_options.centerCellY) <= *a_options.radius;
 		}
 		return true;
 	}

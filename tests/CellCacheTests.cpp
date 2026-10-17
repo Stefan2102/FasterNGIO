@@ -63,6 +63,32 @@ TEST(FinalizeCell, RejectionDropsBlades)
 	EXPECT_TRUE(Grass::FinalizeCell(candidates, std::span(&rejectAll, 1)).cache.groups.empty());
 }
 
+TEST(FinalizeCell, UnloadableGroupsLeaveNoHeadersOrBlocks)
+{
+	std::array<GameData::GrassInfo, 3> grasses{};
+	Grass::CellCandidates candidates;
+	for (std::uint32_t i = 0; i < grasses.size(); ++i) {
+		grasses[i].formID = GameData::FormID{ i + 1 };
+		candidates.groups.push_back({ .grass = &grasses[i], .modelPath = "grass\\test.nif" });
+		AddBlade(candidates, 10.0f, 20.0f, 30.0f, 0, static_cast<std::uint16_t>(i));
+		candidates.blades.back().groupIndex = i;
+	}
+	const std::unordered_set<GameData::FormID, GameData::FormIDHash> missing{ grasses[1].formID };
+	const auto filtered = Grass::FinalizeCell(candidates, {}, Grass::BlockLayout{ .unloadableGrass = &missing }).cache;
+	ASSERT_EQ(filtered.groups.size(), 2u);
+	EXPECT_EQ(filtered.groups[0].grassFormID, 1u);
+	EXPECT_EQ(filtered.groups[1].grassFormID, 3u);
+	// Compare the complete serialized stream with the known-good groups. This checks both the
+	// group count and removal of the missing group's payload, including the following header.
+	auto expected = Grass::FinalizeCell(candidates, {}).cache;
+	expected.groups.erase(expected.groups.begin() + 1);
+	EXPECT_EQ(Grass::SerializeNgioCellCache(filtered), Grass::SerializeNgioCellCache(expected));
+	candidates.groups[0].modelPath.clear();
+	candidates.groups[2].modelPath.clear();
+	EXPECT_EQ(Grass::SerializeNgioCellCache(Grass::FinalizeCell(candidates, {}, Grass::BlockLayout{ .unloadableGrass = &missing }).cache),
+		(std::vector<std::uint8_t>{ 0, 0, 0, 0 }));
+}
+
 TEST(FinalizeCell, DescriptorIsTheEnginesCenterAndExtent)
 {
 	GameData::GrassInfo grass{};

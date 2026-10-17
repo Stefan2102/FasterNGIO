@@ -311,7 +311,7 @@ namespace FasterNGIO::App
 				pipeline.outputDirectory = options.outputDirectory;
 				pipeline.fileSuffixes = pass.suffixes;
 				pipeline.placement = placement.settings;
-				pipeline.blockLayout = Grass::BlockLayout{ .bladesPerBlock = std::addressof(a_shared.grassModels.bladesPerBlock), .capQuadrantBlades = options.capQuadrantBlades };
+				pipeline.blockLayout = Grass::BlockLayout{ .bladesPerBlock = std::addressof(a_shared.grassModels.bladesPerBlock), .capQuadrantBlades = options.capQuadrantBlades, .unloadableGrass = std::addressof(a_shared.grassModels.missingGrass) };
 				pipeline.overwrite = options.overwrite;
 				pipeline.skipEmpty = options.skipEmptyCells.value_or(false);
 				pipeline.existingFiles = a_shared.existingFiles;

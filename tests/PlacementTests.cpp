@@ -67,6 +67,35 @@ namespace
 	}
 }
 
+TEST(Placement, DiagnosticCountersPreserveBladesAndDistinguishWaterFromSlope)
+{
+	for (const auto mode : {Grass::PlacementMode::Vanilla, Grass::PlacementMode::Smooth}) {
+		World world;
+		Grass::PlacementSettings settings;
+		settings.mode = mode;
+		settings.waterHeight = -1.0f;
+		const auto plain = Grass::GenerateCellCandidates(world.snapshot, world.land, settings);
+		ASSERT_FALSE(plain.blades.empty());
+		Grass::PlacementStatistics stats;
+		settings.statistics = &stats;
+		const auto counted = Grass::GenerateCellCandidates(world.snapshot, world.land, settings);
+		ASSERT_EQ(plain.blades.size(), counted.blades.size());
+		for (std::size_t i = 0; i < plain.blades.size(); ++i) EXPECT_EQ(plain.blades[i].words, counted.blades[i].words);
+		EXPECT_EQ(stats.waterRejected, 0u);
+		EXPECT_EQ(stats.slopeRejected, 0u);
+		settings.waterHeight = 1.0f;
+		EXPECT_TRUE(Grass::GenerateCellCandidates(world.snapshot, world.land, settings).blades.empty());
+		EXPECT_GT(stats.waterRejected, 0u);
+		EXPECT_EQ(stats.slopeRejected, 0u);
+		stats = {};
+		settings.waterHeight = -1.0f;
+		world.snapshot.grassesByFormID.at(FormID{0x100}).minSlopeDegrees = 45;
+		EXPECT_TRUE(Grass::GenerateCellCandidates(world.snapshot, world.land, settings).blades.empty());
+		EXPECT_EQ(stats.waterRejected, 0u);
+		EXPECT_GT(stats.slopeRejected, 0u);
+	}
+}
+
 TEST(VanillaPlacement, TakesOneMoreGrassTypePerTextureThanTheIniMaximum)
 {
 	World world;

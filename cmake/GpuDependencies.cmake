@@ -59,6 +59,10 @@ add_subdirectory("${FASTERNGIO_EXTERNAL_DIR}/BasicRHI" "${CMAKE_BINARY_DIR}/_dep
 add_subdirectory("${FASTERNGIO_EXTERNAL_DIR}/OpenRenderGraph" "${CMAKE_BINARY_DIR}/_deps/OpenRenderGraph" EXCLUDE_FROM_ALL)
 add_subdirectory("${FASTERNGIO_EXTERNAL_DIR}/ORGModuleServices" "${CMAKE_BINARY_DIR}/_deps/ORGModuleServices" EXCLUDE_FROM_ALL)
 
+if(WIN32)
+	include("${PROJECT_SOURCE_DIR}/cmake/AgilitySdk.cmake")
+endif()
+
 if(FASTERNGIO_RUNTIME_SHADER_COMPILER)
 	# The DXC runtime is loaded at startup by ORGModuleServices' ShaderCompiler: dxcompiler.dll and
 	# the dxil.dll validator.

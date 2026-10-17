@@ -57,6 +57,18 @@ TEST(CommandLine, HelpParsesToNothing)
 	EXPECT_FALSE(Parse({ "--help" }).has_value());
 }
 
+TEST(CommandLine, LocalGrassInspectionNeedsOneWorldAndACellSelectionButNoCacheOutput)
+{
+	const Game game;
+	const auto options = Parse({"--data", game.data, "--plugins", "p.txt", "--radius", "8", "-3", "2", "--inspect-grass", "area.csv"});
+	ASSERT_TRUE(options);
+	EXPECT_TRUE(options->RunsDiagnostic());
+	EXPECT_EQ(options->inspectGrassPath, "area.csv");
+	EXPECT_THROW((void)Parse({"--data", game.data, "--inspect-grass", "area.csv"}), std::invalid_argument);
+	EXPECT_THROW((void)Parse({"--data", game.data, "--cell", "8", "-3", "--inspect-grass", "area.csv", "--export-blades", "blades.bin"}), std::invalid_argument);
+	EXPECT_THROW((void)Parse({"--data", game.data, "--world", "all", "--cell", "8", "-3", "--inspect-grass", "area.csv"}), std::invalid_argument);
+}
+
 TEST(CommandLine, DerivesPluginsTxtFromTheGameFolder)
 {
 	const Game game;
@@ -80,6 +92,7 @@ TEST(CommandLine, RejectsInvalidArguments)
 	rejects({ "--threads", "010x" });
 	rejects({ "--ray-depth", "5cm" });
 	rejects({ "--cell", "1", "2", "--radius", "1", "2", "3" });
+	rejects({ "--radius", "1", "2", "-1" });
 	rejects({ "--world", "all", "--cell", "1", "2" });
 	rejects({ "--world", "0x3C,0x16BB4", "--radius", "1", "2", "3" });
 	rejects({ "--world", "0x3C,0x16BB4", "--benchmark-rejection" });

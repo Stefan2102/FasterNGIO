@@ -136,6 +136,8 @@ namespace FasterNGIO::App
 			"  --ray-width-mult <f>          Ray-cast-width-multiplier, default 0.3\n"
 			"\n"
 			"Diagnostics:\n"
+			"  --inspect-grass <file.csv>    Local placement report: blade counts, empty neighbours, heights and textures;\n"
+			"                                use --cell or --radius; before rejection, unswapped, writes no caches\n"
 			"  --collision-survey            Extract the collision of every model the world references and report it\n"
 			"  --export-blades <file>        Write every selected cell's placed blades (x, y: float32, grass form ID:\n"
 			"                                uint32) before rejection, for offline analysis; writes no caches\n"
@@ -186,6 +188,9 @@ namespace FasterNGIO::App
 				options.centerCellX = ParseI32(requireValue(arg));
 				options.centerCellY = ParseI32(requireValue(arg));
 				options.radius = ParseI32(requireValue(arg));
+				if (*options.radius < 0) {
+					throw std::invalid_argument("--radius must be nonnegative");
+				}
 			} else if (arg == "--max-grass-types") {
 				options.maxGrassTypesOverride = ParseU32(requireValue(arg));
 			} else if (arg == "--min-grass-size") {
@@ -304,6 +309,8 @@ namespace FasterNGIO::App
 			} else if (arg == "--smooth-warp") {
 				options.placement.smooth.warpAmplitude = ParseFloat(requireValue(arg));
 				options.placement.smooth.warpWavelength = ParseFloat(requireValue(arg));
+			} else if (arg == "--inspect-grass") {
+				options.inspectGrassPath = Platform::PathFromUtf8(requireValue(arg));
 			} else if (arg == "--export-blades") {
 				options.exportBladesPath = Platform::PathFromUtf8(requireValue(arg));
 			} else if (arg == "--benchmark-rejection") {
@@ -319,9 +326,12 @@ namespace FasterNGIO::App
 		}
 
 		const int diagnostics = (options.collisionSurvey ? 1 : 0) + (options.benchmarkRejection ? 1 : 0) + (options.exportBladesPath.empty() ? 0 : 1) +
-		                        (options.dumpCollisionModel.empty() ? 0 : 1) + (options.dumpSeasonSwapsPath.empty() ? 0 : 1);
+		                        (options.dumpCollisionModel.empty() ? 0 : 1) + (options.dumpSeasonSwapsPath.empty() ? 0 : 1) + (options.inspectGrassPath.empty() ? 0 : 1);
 		if (diagnostics > 1) {
-			throw std::invalid_argument("choose one of --collision-survey, --benchmark-rejection, --export-blades, --dump-collision and --dump-season-swaps");
+			throw std::invalid_argument("choose one of --collision-survey, --benchmark-rejection, --export-blades, --inspect-grass, --dump-collision and --dump-season-swaps");
+		}
+		if (!options.inspectGrassPath.empty() && !options.singleCellX && !options.radius) {
+			throw std::invalid_argument("--inspect-grass needs --cell or --radius");
 		}
 		if (options.singleCellX && options.radius) {
 			throw std::invalid_argument("choose either --cell or --radius");

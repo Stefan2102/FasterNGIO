@@ -70,6 +70,29 @@ Rejection backends (`--reject`):
 
 Both backends produce the same caches (to a few float-precision edge cases per million blades).
 
+To investigate a small area, use `--radius <x> <y> <r>` (a square of cells) or `--cell <x> <y>`.
+These generate ordinary caches with the same settings and worldspace-wide smooth calibration as a
+full run. Choose a separate `--out` folder to inspect the results.
+
+`--inspect-grass <report.csv>` instead generates the selected cells in memory, before rejection
+and without seasonal swaps, and writes no caches. It requires one worldspace and a cell or radius:
+
+```text
+FasterNGIO --radius 8 -3 2 --inspect-grass area.csv
+```
+
+Run this from MO2, or supply `--data`, `--plugins` and (if needed) `--game-ini-dir` as usual. The
+report compares the selected placement with vanilla placement using the same resolved settings,
+flags empty cells beside populated neighbours within the selection, and includes terrain and water
+heights, water/slope rejection counts, texture IDs and holes without LAND (`status=no_land`). A
+companion `area.csv.textures.csv` lists those textures' grass types, model availability, densities,
+and water/slope constraints, in each texture's grass-list order. The report's counts exclude
+collision and texture rejection and the cache's quadrant cap. Use ordinary local generation to
+check the resulting caches after those steps.
+`area.csv.patches.csv` also compares counts in each cell's 8x8 grid of 512-unit patches, including
+empty patches, so a populated cell's total does not conceal holes within it. Patch coordinates
+start at its southwest corner (x east, y north).
+
 Experimental: `--render-geometry` (in the window: "Use model geometry instead of collision") makes
 objects that have collision reject grass by their visible mesh instead of their collision, which is
 usually coarser. Hidden, skinned, decal and effect shapes are left out, and objects without
@@ -151,6 +174,12 @@ line; `--gui` opens the window too. Compiled shaders are
 cached in the same folder (`~/.cache/fasterngio` on Linux).
 
 Licensed under the GNU General Public License v3 (see `LICENSE`).
+
+Windows GPU builds use the DirectX 12 Agility SDK from vcpkg's `directx12-agility` package. Keep the
+`D3D12` folder beside `FasterNGIO.exe`: it contains `D3D12Core.dll` and the matching debug layer used
+by `--gpu-debug`. CMake deploys these for local builds and includes them in the `FasterNGIO` install
+component. The executable exports `D3D12SDKVersion` and `D3D12SDKPath` to select this runtime;
+`d3d12.lib` still supplies the Windows loader entry points. CPU builds and Linux do not use Agility.
 
 ## Shared world reader
 

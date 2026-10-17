@@ -157,15 +157,17 @@ namespace FasterNGIO::Grass::Internal
 	// blade under a_quadrant.
 	template <class SignedRandom>
 	void EmitBlade(CellCandidates& a_cell, std::uint32_t a_groupIndex, std::uint8_t a_quadrant, const LandInfo& a_land, const GameData::GrassInfo& a_grass, float a_x, float a_y,
-		std::optional<float> a_waterHeight, SignedRandom&& a_signedRandom)
+		std::optional<float> a_waterHeight, SignedRandom&& a_signedRandom, PlacementStatistics* a_statistics = nullptr)
 	{
 		const auto x = QuantizeToBlock(a_x, BlockBase(a_cell.cellX));
 		const auto y = QuantizeToBlock(a_y, BlockBase(a_cell.cellY));
 		const auto terrain = SampleTerrain(a_land, x, y);
 		if (a_waterHeight && !PassesWaterFilter(a_grass, terrain.height, *a_waterHeight)) {
+			if (a_statistics) ++a_statistics->waterRejected;
 			return;
 		}
 		if (!PassesSlopeFilter(a_grass, terrain)) {
+			if (a_statistics) ++a_statistics->slopeRejected;
 			return;
 		}
 		// Rec. 601 luma of the terrain's vertex colour, varied by the GRAS colour range.
