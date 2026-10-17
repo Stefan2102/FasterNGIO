@@ -126,6 +126,15 @@ Shaders are deployed next to the exe by the `FasterNGIOShaders` target:
   only after one with bit 1 (no DATA: flags 0). A LAND without heights keeps the worldspace's DNAM
   default land height (-2048 without one, through the parent like water, `LandDataWorld`) at every
   vertex and still grows grass: `SelectLands` fills it in.
+- **No Grass worldspaces get no cache.** `PlayerCharacter::SetParentCell` enables the grass manager
+  (`GrassManager+0x88`, which gates both loading a cache and creating grass) only in an exterior
+  cell whose worldspace lacks WRLD DATA bit 7 (No Grass; the getter returns `flags >> 7`).
+  `SelectWorlds` leaves such worlds out under `--world all` and when named, and the launcher lists
+  them disabled. Since NGIO still shows a cache it finds there, every run first removes the output
+  folder's caches of every such world, selected or not (`RemoveNoGrassCaches`, matching names with
+  `Grass::IsNgioCacheFileOf`); under MO2 they get the empty cache instead, as for empty cells.
+  Vanilla flags WhiterunWorld, LabyrinthianWorld03, DLC1VampireCastleCourtyard and
+  DLC2ApocryphaWorld; WhiterunWorld's LAND is reshaped under the city, so grass placed on it floats.
 - **Grass the game cannot load is not placed.** When a GRAS model is in no loose file or archive,
   `LoadGrassType` returns null: generation skips the type (no RNG draws), and loading a cache skips its
   group header but not its blocks, misreading the rest of the file. `MeasureGrassModels` lists those

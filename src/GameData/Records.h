@@ -55,6 +55,8 @@ namespace FasterNGIO::GameData
 		float defaultLandHeight{ -2048.0f };
 		// DNAM's second float; the engine's default is 0.
 		float defaultWaterHeight{ 0.0f };
+		// DATA bit 7 (No Grass): the game grows no grass in this worldspace and loads no cache for it.
+		bool noGrass{ false };
 
 		[[nodiscard]] bool UsesParentLandData() const { return parentWorldFormID.has_value() && (parentUseFlags & 0x1u) != 0; }
 	};

@@ -193,6 +193,50 @@ namespace FasterNGIO::App
 			return names;
 		}
 
+		// Removes the caches in a_directory of every worldspace flagged No Grass, whatever the run selects:
+		// the game makes no grass there, but NGIO still shows a cache it finds, as an earlier run (or
+		// another generator) may have left (floating in WhiterunWorld). Under MO2 (a_emptyInstead) each
+		// gets the empty cache instead, since through the VFS a remove deletes the file inside its mod.
+		void RemoveNoGrassCaches(const std::filesystem::path& a_directory, const GameData::StaticWorldSnapshot& a_snapshot, bool a_emptyInstead,
+			Pipeline::FileWriterPool& a_writer)
+		{
+			std::vector<std::string> editorIDs;
+			for (const auto& [formID, world] : a_snapshot.worldsByFormID) {
+				if (world.noGrass) {
+					editorIDs.push_back(Grass::ResolveWorldEditorID(a_snapshot, formID));
+				}
+			}
+			if (editorIDs.empty()) {
+				return;
+			}
+			const auto tally = std::make_shared<Pipeline::WriteTally>();
+			std::size_t found = 0;
+			std::size_t removed = 0;
+			std::error_code error;
+			for (std::filesystem::directory_iterator it(a_directory, error), end; !error && it != end; it.increment(error)) {
+				const auto name = Platform::Utf8(it->path().filename());
+				if (std::ranges::none_of(editorIDs, [&](const std::string& a_editorID) { return Grass::IsNgioCacheFileOf(name, a_editorID); })) {
+					continue;
+				}
+				++found;
+				if (a_emptyInstead) {
+					a_writer.Submit(it->path(), Grass::SerializeNgioCellCache({}), tally);
+				} else if (std::error_code removeError; std::filesystem::remove(it->path(), removeError)) {
+					++removed;
+				} else {
+					spdlog::warn("could not remove {}: {}", name, removeError.message());
+				}
+			}
+			if (found == 0) {
+				return;
+			}
+			if (a_emptyInstead) {
+				spdlog::info("No Grass worldspaces: replaced {} existing cache file(s) with the empty cache (under Mod Organizer 2, where they may belong to another mod)", found);
+			} else {
+				spdlog::info("No Grass worldspaces: removed {} existing cache file(s)", removed);
+			}
+		}
+
 		// Every GRAS model's blades per cache block (the engine's instances per group) and the grass types
 		// whose model is missing, logged.
 		Grass::GrassModelLayout LoadGrassModels(const GameData::StaticWorldSnapshot& a_snapshot, const Archives::ArchiveResolver& a_resolver)
@@ -350,10 +394,22 @@ namespace FasterNGIO::App
 			return result;
 		}
 
-		// The worldspaces a run generates, in order.
+		// The worldspaces a run generates, in order. Those flagged No Grass are left out whatever
+		// selects them: the game neither loads a cache nor creates grass there, and their LAND need not
+		// be the ground players see (WhiterunWorld's, reshaped under the city, floats grass).
 		[[nodiscard]] std::vector<GameData::FormID> SelectWorlds(const GenerateOptions& a_options, const GameData::StaticWorldSnapshot& a_snapshot)
 		{
 			const auto available = ListWorlds(a_snapshot);
+			std::size_t noGrassCount = 0;
+			std::string noGrass;
+			for (const auto& summary : available) {
+				if (summary.noGrass && (a_options.allWorlds || std::ranges::find(a_options.worlds, summary.formID) != a_options.worlds.end())) {
+					noGrass += std::format("{}{}", noGrassCount++ == 0 ? "" : ", ", summary.editorID.empty() ? std::format("{:08X}", summary.formID.value) : summary.editorID);
+				}
+			}
+			if (noGrassCount != 0) {
+				spdlog::info("skipping {} worldspace(s) flagged No Grass, where the game grows none: {}", noGrassCount, noGrass);
+			}
 			std::vector<GameData::FormID> worlds;
 			if (a_options.allWorlds) {
 				// NGIO's Only-/Skip-pregenerate-world-spaces, by editor ID: only the first list's when it
@@ -363,6 +419,9 @@ namespace FasterNGIO::App
 				};
 				std::vector<std::string> skipped;
 				for (const auto& summary : available) {
+					if (summary.noGrass) {
+						continue;
+					}
 					const bool skip = a_options.onlyWorldspaces.empty() ? listed(a_options.skipWorldspaces, summary.editorID)
 					                                                    : !listed(a_options.onlyWorldspaces, summary.editorID);
 					if (skip) {
@@ -372,7 +431,7 @@ namespace FasterNGIO::App
 					}
 				}
 				if (worlds.empty()) {
-					throw std::runtime_error(skipped.empty() ? "no worldspace has LAND records" : "every worldspace with LAND records is skipped by the NGIO settings");
+					throw std::runtime_error(skipped.empty() ? "no worldspace with grass has LAND records" : "every worldspace with grass and LAND records is skipped by the NGIO settings");
 				}
 				spdlog::info("{} worldspace(s) with LAND records{}", worlds.size(),
 					skipped.empty() ? std::string{} : std::format("; skipping {} as the NGIO settings ask", skipped.size()));
@@ -383,14 +442,21 @@ namespace FasterNGIO::App
 			}
 			// Checked before the first world runs, so a mistyped one does not stop the run halfway.
 			for (const auto world : a_options.worlds) {
-				if (std::ranges::find(available, world, &WorldSummary::formID) == available.end()) {
+				const auto it = std::ranges::find(available, world, &WorldSummary::formID);
+				if (it == available.end()) {
 					throw std::runtime_error(std::format("no LAND records were loaded for world {:08X}", world.value));
 				}
+				if (!it->noGrass) {
+					worlds.push_back(world);
+				}
 			}
-			if (a_options.worlds.size() > 1) {
-				spdlog::info("{} worldspace(s) selected", a_options.worlds.size());
+			if (worlds.empty()) {
+				throw std::runtime_error("every selected worldspace is flagged No Grass: the game grows no grass there");
 			}
-			return a_options.worlds;
+			if (worlds.size() > 1) {
+				spdlog::info("{} worldspace(s) selected", worlds.size());
+			}
+			return worlds;
 		}
 	}
 
@@ -425,7 +491,11 @@ namespace FasterNGIO::App
 				}
 			}
 			if (!cells.empty()) {
-				worlds.push_back(WorldSummary{ .formID = formID, .editorID = Grass::ResolveWorldEditorID(a_snapshot, formID), .cells = cells.size() });
+				const auto worldIt = a_snapshot.worldsByFormID.find(formID);
+				worlds.push_back(WorldSummary{ .formID = formID,
+					.editorID = Grass::ResolveWorldEditorID(a_snapshot, formID),
+					.cells = cells.size(),
+					.noGrass = worldIt != a_snapshot.worldsByFormID.end() && worldIt->second.noGrass });
 			}
 		}
 		std::ranges::sort(worlds, {}, [](const WorldSummary& a_world) { return a_world.formID.value; });
@@ -492,6 +562,7 @@ namespace FasterNGIO::App
 			placement.unloadableGrass = std::addressof(grassModels.missingGrass);
 			ThrowIfStopped(a_control);
 			writer.emplace(options.writerThreads, kMaxPendingWriteBytes);
+			RemoveNoGrassCaches(options.outputDirectory, plugins.snapshot, Platform::ModOrganizerDirectory().has_value(), *writer);
 			std::optional<std::unordered_set<std::string>> existingFiles;
 			bool emptyInsteadOfRemove = false;
 			if (options.skipEmptyCells.value_or(false) && options.overwrite) {

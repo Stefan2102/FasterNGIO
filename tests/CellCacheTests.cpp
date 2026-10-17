@@ -185,4 +185,15 @@ TEST(FinalizeCell, CacheFileNameMatchesNgio)
 	// Grass Cache Helper NG's seasonal name.
 	EXPECT_EQ(Grass::MakeNgioCacheFileName("Tamriel", -1, 12, "WIN"), "Tamrielx-001y0012.WIN.cgid");
 	EXPECT_EQ(Grass::MakeNgioCacheFileName("Tamriel", -1, 12, ""), "Tamrielx-001y0012.cgid");
+
+	// Recognizing a world's caches, plain or seasonal, in any case.
+	EXPECT_TRUE(Grass::IsNgioCacheFileOf("WhiterunWorldx0005y-003.cgid", "WhiterunWorld"));
+	EXPECT_TRUE(Grass::IsNgioCacheFileOf("whiterunworldX0005Y-003.WIN.CGID", "WhiterunWorld"));
+	EXPECT_TRUE(Grass::IsNgioCacheFileOf("WhiterunWorldx0005y-003.gid", "WhiterunWorld"));
+	EXPECT_FALSE(Grass::IsNgioCacheFileOf("WhiterunWorldx0005y-003.cgid.tmp", "WhiterunWorld"));
+	EXPECT_FALSE(Grass::IsNgioCacheFileOf("WhiterunWorldx0005y-003.a.b.cgid", "WhiterunWorld"));
+	EXPECT_FALSE(Grass::IsNgioCacheFileOf("WhiterunWorldx0005.cgid", "WhiterunWorld"));
+	// Another world whose editor ID starts with this one's.
+	EXPECT_FALSE(Grass::IsNgioCacheFileOf("WhiterunWorldExtx0005y-003.cgid", "WhiterunWorld"));
+	EXPECT_FALSE(Grass::IsNgioCacheFileOf("Tamrielx0005y-003.cgid", "WhiterunWorld"));
 }

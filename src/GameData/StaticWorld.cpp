@@ -76,7 +76,8 @@ namespace FasterNGIO::GameData
 														.parentWorldFormID = r.parentWorld,
 														.parentUseFlags = r.parentUseFlags,
 														.defaultLandHeight = r.defaultLandHeight.value_or(-2048.0f),
-														.defaultWaterHeight = r.defaultWaterHeight.value_or(0.0f)});
+														.defaultWaterHeight = r.defaultWaterHeight.value_or(0.0f),
+														.noGrass = r.HasNoGrass()});
 		for (auto& [id, r] : world.cellsByFormID)
 			result.cellsByFormID.emplace(id, CellInfo{.formID = id,
 													  .worldFormID = r.worldFormID,
