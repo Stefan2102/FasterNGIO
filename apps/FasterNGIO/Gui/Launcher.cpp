@@ -313,8 +313,12 @@ namespace FasterNGIO::Gui
 				return _ngioOnlyWorlds.empty() ? listed(_ngioSkipWorlds) : !listed(_ngioOnlyWorlds);
 			}
 
+			// A worldspace flagged No Grass is never generated (App::Run leaves it out).
 			[[nodiscard]] bool IsWorldSelected(const App::WorldSummary& a_world) const
 			{
+				if (a_world.noGrass) {
+					return false;
+				}
 				if (_inputs.allWorlds) {
 					return !SkippedByNgio(a_world);
 				}
@@ -323,7 +327,7 @@ namespace FasterNGIO::Gui
 
 			[[nodiscard]] std::size_t NgioSkippedCount(const Scan& a_scan) const
 			{
-				return static_cast<std::size_t>(std::ranges::count_if(a_scan.worlds, [&](const App::WorldSummary& a_world) { return SkippedByNgio(a_world); }));
+				return static_cast<std::size_t>(std::ranges::count_if(a_scan.worlds, [&](const App::WorldSummary& a_world) { return !a_world.noGrass && SkippedByNgio(a_world); }));
 			}
 
 			void SetWorldSelected(const Scan& a_scan, std::uint32_t a_formID, bool a_selected)
@@ -333,7 +337,7 @@ namespace FasterNGIO::Gui
 					_inputs.allWorlds = false;
 					_inputs.worlds.clear();
 					for (const auto& world : a_scan.worlds) {
-						if (!SkippedByNgio(world)) {
+						if (!SkippedByNgio(world) && !world.noGrass) {
 							_inputs.worlds.push_back(world.formID.value);
 						}
 					}
@@ -602,11 +606,14 @@ namespace FasterNGIO::Gui
 						ImGui::Separator();
 						for (const auto& world : scan->worlds) {
 							const auto label = std::format("{}  ({} cells){}##{:08X}", world.editorID, world.cells,
-								SkippedByNgio(world) ? ", skipped by GrassControl.ini unless ticked" : "", world.formID.value);
+								world.noGrass ? ", flagged No Grass: the game grows none"
+								: SkippedByNgio(world) ? ", skipped by GrassControl.ini unless ticked" : "", world.formID.value);
 							bool selected = IsWorldSelected(world);
+							ImGui::BeginDisabled(world.noGrass);
 							if (ImGui::Checkbox(label.c_str(), &selected)) {
 								SetWorldSelected(*scan, world.formID.value, selected);
 							}
+							ImGui::EndDisabled();
 						}
 					} else if (_scan && _scan->Failed()) {
 						ImGui::TextDisabled("Could not read the plugins: %s", _scan->Error().c_str());

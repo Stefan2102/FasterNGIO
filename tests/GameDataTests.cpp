@@ -1,4 +1,5 @@
 #include "Archives/ArchiveResolver.h"
+#include "Generate.h"
 #include "GameData/GameData.h"
 #include "Grass/Placement.h"
 #include "Platform/DataDirectory.h"
@@ -165,12 +166,13 @@ namespace
 		PluginWriter world;
 		world.Record("WRLD", 0x00003C, PluginWriter{}.Sub("EDID", Z("Tamriel")).Sub("DNAM", PluginWriter{}.F32(-1000.0f).F32(-14000.0f).Data()).Data())
 			.Group(0x00003C, 1, worldChildren.Data());
-		// A child worldspace using its parent's land data (PNAM bit 0), with a LAND without VHGT.
+		// A child worldspace using its parent's land data (PNAM bit 0), with a LAND without VHGT, and
+		// WhiterunWorld's DATA flags (small world, no LOD water, no grass).
 		PluginWriter childChildren;
 		childChildren.Record("CELL", 0x000907, PluginWriter{}.Sub("DATA", { 0, 0 }).Sub("XCLC", PluginWriter{}.U32(1).U32(1).U32(0).Data()).Data())
 			.Group(0x000907, 9, PluginWriter{}.Record("LAND", 0x000A12, PluginWriter{}.Sub("DATA", PluginWriter{}.U32(0).Data()).Data()).Data());
 		world.Record("WRLD", 0x00003D,
-			PluginWriter{}.Sub("EDID", Z("Child")).Sub("WNAM", PluginWriter{}.U32(0x3C).Data()).Sub("PNAM", PluginWriter{}.U16(1).Data()).Data())
+			PluginWriter{}.Sub("EDID", Z("Child")).Sub("WNAM", PluginWriter{}.U32(0x3C).Data()).Sub("PNAM", PluginWriter{}.U16(1).Data()).Sub("DATA", { 0x89 }).Data())
 			.Group(0x00003D, 1, childChildren.Data());
 
 		PluginWriter plugin;
@@ -344,6 +346,13 @@ TEST(GameData, ResolvesOverridesDeletionsAndCompressedRecords)
 	EXPECT_FALSE(snapshot.worldsByFormID.contains(FormID{ 0x01000E00 }));
 	EXPECT_EQ(cell.worldFormID, FormID{ 0x3C });
 	EXPECT_EQ(child.defaultLandHeight, -2048.0f);
+	// DATA bit 7: the game grows no grass there, so runs leave the worldspace out.
+	EXPECT_FALSE(tamriel.noGrass);
+	EXPECT_TRUE(child.noGrass);
+	const auto worlds = App::ListWorlds(snapshot);
+	const auto summaryOf = [&](FormID a_world) { return *std::ranges::find(worlds, a_world, &App::WorldSummary::formID); };
+	EXPECT_FALSE(summaryOf(FormID{ 0x3C }).noGrass);
+	EXPECT_TRUE(summaryOf(FormID{ 0x3D }).noGrass);
 
 	// LAND as the engine loads it: VHGT and VCLR count only after DATA's bits 0 and 1, and a LAND
 	// without heights sits at its worldspace's default land height (the parent's, through PNAM).

@@ -64,6 +64,10 @@ namespace FasterNGIO::Grass
 	// (a_season "WIN", "SPR", "SUM" or "AUT"); the plain name when a_season is empty.
 	[[nodiscard]] std::string MakeNgioCacheFileName(std::string_view a_worldEditorID, std::int32_t a_cellX, std::int32_t a_cellY, std::string_view a_season);
 
+	// Whether a_fileName names one of a_worldEditorID's cell caches: "<EditorID>x<X>y<Y>", then
+	// optionally ".<SEASON>", then ".cgid" (or older NGIO's ".gid"), ignoring ASCII case.
+	[[nodiscard]] bool IsNgioCacheFileOf(std::string_view a_fileName, std::string_view a_worldEditorID);
+
 	// The worldspace's editor ID, "Tamriel" for 0x3C without one, else its form ID in hex.
 	[[nodiscard]] std::string ResolveWorldEditorID(const GameData::StaticWorldSnapshot& a_snapshot, GameData::FormID a_worldFormID);
 

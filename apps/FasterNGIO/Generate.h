@@ -70,6 +70,8 @@ namespace FasterNGIO::App
 		GameData::FormID formID;
 		std::string editorID;
 		std::size_t cells{ 0 };
+		// The worldspace's No Grass flag: the game grows none there, so runs leave it out.
+		bool noGrass{ false };
 	};
 
 	// Parses every plugin in the load order into the static world snapshot. Throws on a missing

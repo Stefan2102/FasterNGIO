@@ -1,6 +1,7 @@
 #include "Grass/CellCache.h"
 
 #include "Grass/Internal/PlacementCommon.h"
+#include "Platform/Text.h"
 
 #include <algorithm>
 #include <array>
@@ -174,6 +175,39 @@ namespace FasterNGIO::Grass
 			return MakeNgioCacheFileName(a_worldEditorID, a_cellX, a_cellY);
 		}
 		return std::format("{}x{:04}y{:04}.{}.cgid", a_worldEditorID, a_cellX, a_cellY, a_season);
+	}
+
+	bool IsNgioCacheFileOf(std::string_view a_fileName, std::string_view a_worldEditorID)
+	{
+		if (a_worldEditorID.empty() || a_fileName.size() <= a_worldEditorID.size() || !Platform::IEquals(a_fileName.substr(0, a_worldEditorID.size()), a_worldEditorID)) {
+			return false;
+		}
+		auto rest = Platform::LowerAscii(a_fileName.substr(a_worldEditorID.size()));
+		std::string_view tail = rest;
+		// A coordinate: an optional minus, then digits.
+		const auto coordinate = [&](char a_axis) {
+			if (tail.empty() || tail.front() != a_axis) {
+				return false;
+			}
+			tail.remove_prefix(1);
+			if (!tail.empty() && tail.front() == '-') {
+				tail.remove_prefix(1);
+			}
+			const auto digits = std::ranges::find_if_not(tail, [](char a_char) { return a_char >= '0' && a_char <= '9'; }) - tail.begin();
+			tail.remove_prefix(static_cast<std::size_t>(digits));
+			return digits != 0;
+		};
+		if (!coordinate('x') || !coordinate('y')) {
+			return false;
+		}
+		for (const std::string_view extension : { std::string_view(".cgid"), std::string_view(".gid") }) {
+			if (tail.ends_with(extension)) {
+				tail.remove_suffix(extension.size());
+				// Nothing left, or a season: a dot and a name without another dot.
+				return tail.empty() || (tail.size() > 1 && tail.front() == '.' && tail.find('.', 1) == std::string_view::npos);
+			}
+		}
+		return false;
 	}
 
 	std::string ResolveWorldEditorID(const GameData::StaticWorldSnapshot& a_snapshot, GameData::FormID a_worldFormID)
