@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 // From a cell's placed blades to its .cgid file, as NGIO names and lays it out.
 namespace FasterNGIO::Grass
@@ -40,6 +41,9 @@ namespace FasterNGIO::Grass
 		// excess is thinned evenly over the quadrant (the engine drops the last batches, which empties
 		// the quadrant's last patches).
 		bool capQuadrantBlades{ true };
+		// Omit these types completely, including their headers and blocks. The game's cache reader
+		// does not advance past a group's blocks when its model fails to load.
+		const std::unordered_set<GameData::FormID, GameData::FormIDHash>* unloadableGrass{ nullptr };
 	};
 
 	struct FinalizedCell

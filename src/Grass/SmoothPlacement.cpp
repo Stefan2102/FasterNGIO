@@ -330,7 +330,7 @@ namespace FasterNGIO::Grass
 					}
 					constexpr float kHalfCell = GameData::kSkyrimTerrainCellSize * 0.5f;
 					const auto quadrant = static_cast<std::uint8_t>((x - cellOriginX >= kHalfCell ? 1u : 0u) | (y - cellOriginY >= kHalfCell ? 2u : 0u));
-					EmitBlade(result, groupIndex, quadrant, a_land, grass, x, y, waterHeight, [&] { return rng.Signed(); });
+					EmitBlade(result, groupIndex, quadrant, a_land, grass, x, y, waterHeight, [&] { return rng.Signed(); }, a_settings.statistics);
 				}
 			}
 		}

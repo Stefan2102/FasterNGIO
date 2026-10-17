@@ -100,11 +100,19 @@ namespace FasterNGIO::Grass
 	{
 		// The surviving blades of each group and quadrant, in placement order.
 		std::vector<std::vector<std::uint32_t>> kept(a_candidates.groups.size() * kQuadrants);
+		std::vector<bool> loadable;
+		loadable.reserve(a_candidates.groups.size());
+		for (const auto& group : a_candidates.groups) {
+			loadable.push_back(!group.modelPath.empty() && !(a_layout.unloadableGrass && a_layout.unloadableGrass->contains(group.grass->formID)));
+		}
 		for (std::size_t i = 0; i < a_candidates.blades.size(); ++i) {
 			if (!a_rejected.empty() && (a_rejected[i / 32] & (1u << (i % 32))) != 0) {
 				continue;
 			}
 			const auto& blade = a_candidates.blades[i];
+			if (!loadable[blade.groupIndex]) {
+				continue;
+			}
 			kept[blade.groupIndex * kQuadrants + blade.quadrant].push_back(static_cast<std::uint32_t>(i));
 		}
 

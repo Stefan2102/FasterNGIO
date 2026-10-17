@@ -7,6 +7,7 @@
 #include "Collision/ObjExport.h"
 #include "Concurrency/AtomicWait.h"
 #include "Grass/GrassModels.h"
+#include "Grass/Internal/PlacementCommon.h"
 #include "Rejection/CpuBvh.h"
 
 #include <oneapi/tbb/parallel_for.h>
@@ -22,11 +23,13 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace FasterNGIO::App
@@ -222,6 +225,151 @@ namespace FasterNGIO::App
 			return 0;
 		}
 
+		// Compare local placement with the engine algorithm before any rejection. Only selected
+		// cells are generated; smooth calibration still uses the entire worldspace.
+		int InspectGrass(const GenerateOptions& a_options, const Grass::PlacementSettings& a_settings,
+			const GameData::StaticWorldSnapshot& a_snapshot, std::span<const GameData::LandInfo* const> a_lands)
+		{
+			// 512-unit patches show holes inside an otherwise populated cell, which cell totals hide.
+			constexpr std::size_t kPatchSide = 8;
+			using Patches = std::array<std::size_t, kPatchSide * kPatchSide>;
+			const auto countPatches = [](const Grass::CellCandidates& a_cell) {
+				Patches patches{};
+				for (const auto& blade : a_cell.blades) {
+					const auto x = std::clamp(static_cast<int>((blade.position[0] - static_cast<float>(a_cell.cellX) * 4096.0f) / 512.0f), 0, 7);
+					const auto y = std::clamp(static_cast<int>((blade.position[1] - static_cast<float>(a_cell.cellY) * 4096.0f) / 512.0f), 0, 7);
+					++patches[static_cast<std::size_t>(y) * kPatchSide + static_cast<std::size_t>(x)];
+				}
+				return patches;
+			};
+			struct Counts {
+				std::size_t placed{}, vanilla{};
+				Patches patches{}, vanillaPatches{};
+				Grass::PlacementStatistics statistics;
+			};
+			std::vector<Counts> counts(a_lands.size());
+			oneapi::tbb::parallel_for(std::size_t{0}, a_lands.size(), [&](std::size_t i) {
+				auto settings = a_settings;
+				settings.statistics = &counts[i].statistics;
+				const auto cell = Grass::GenerateCellCandidates(a_snapshot, *a_lands[i], settings);
+				counts[i].placed = cell.blades.size();
+				counts[i].patches = countPatches(cell);
+				auto vanilla = a_settings;
+				vanilla.mode = Grass::PlacementMode::Vanilla;
+				if (a_settings.mode == Grass::PlacementMode::Vanilla) {
+					counts[i].vanilla = counts[i].placed;
+					counts[i].vanillaPatches = counts[i].patches;
+				} else {
+					const auto vanillaCell = Grass::GenerateCellCandidates(a_snapshot, *a_lands[i], vanilla);
+					counts[i].vanilla = vanillaCell.blades.size();
+					counts[i].vanillaPatches = countPatches(vanillaCell);
+				}
+			});
+			std::unordered_map<std::uint64_t, std::size_t> byCell;
+			for (std::size_t i = 0; i < a_lands.size(); ++i) {
+				byCell.emplace(GameData::PackCellCoords(*a_lands[i]->cellX, *a_lands[i]->cellY), i);
+			}
+			std::ofstream output(a_options.inspectGrassPath);
+			if (!output) {
+				throw std::runtime_error("cannot write " + Platform::Utf8(a_options.inspectGrassPath));
+			}
+			output << "x,y,cell,land,blades,vanilla_blades,grass_neighbours,min_height,max_height,water_height,water_rejected,slope_rejected,base_textures,alpha_textures,status\n";
+			std::unordered_set<GameData::FormID, GameData::FormIDHash> textures;
+			for (std::size_t i = 0; i < a_lands.size(); ++i) {
+				const auto& land = *a_lands[i];
+				const auto x = *land.cellX, y = *land.cellY;
+				std::size_t neighbours = 0;
+				for (int dy = -1; dy <= 1; ++dy) {
+					for (int dx = -1; dx <= 1; ++dx) {
+						if (dx == 0 && dy == 0) continue;
+						const auto it = byCell.find(GameData::PackCellCoords(x + dx, y + dy));
+						if (it != byCell.end() && counts[it->second].placed != 0) ++neighbours;
+					}
+				}
+				const auto [lo, hi] = std::ranges::minmax_element(land.heights);
+				const auto water = Grass::Internal::CellWaterHeight(a_snapshot, land, a_settings);
+				output << std::format("{},{},{:08X},{:08X},{},{},{},{},{},{},", x, y, land.parentCell.value, land.formID.value,
+					counts[i].placed, counts[i].vanilla, neighbours, *lo, *hi, water.value_or(0));
+				output << counts[i].statistics.waterRejected << ',' << counts[i].statistics.slopeRejected << ',';
+				for (const auto& texture : land.baseTextures) {
+					textures.insert(texture ? texture->landTextureFormID : GameData::kSkyrimDefaultLandTextureFormID);
+					output << (texture ? std::format("{:08X};", texture->landTextureFormID.value) : "none;");
+				}
+				output << ',';
+				for (const auto& texture : land.alphaTextures) {
+					textures.insert(texture.landTextureFormID);
+					output << std::format("{:08X};", texture.landTextureFormID.value);
+				}
+				output << ",land\n";
+				spdlog::info("cell ({}, {}): {} blades, vanilla {}; heights {}..{}, water {}{}", x, y, counts[i].placed,
+					counts[i].vanilla, *lo, *hi, water.value_or(0), counts[i].placed == 0 && neighbours != 0 ? " EMPTY beside grass" : "");
+			}
+			// Include holes in the requested rectangle: no LAND must not look like a zero-blade LAND.
+			const std::int64_t cx = a_options.singleCellX.value_or(a_options.centerCellX.value_or(0));
+			const std::int64_t cy = a_options.singleCellY.value_or(a_options.centerCellY.value_or(0));
+			const std::int64_t radius = a_options.radius.value_or(0);
+			const auto low = static_cast<std::int64_t>((std::numeric_limits<std::int32_t>::min)());
+			const auto high = static_cast<std::int64_t>((std::numeric_limits<std::int32_t>::max)());
+			for (auto y = (std::max)(low, cy - radius); y <= (std::min)(high, cy + radius); ++y) {
+				for (auto x = (std::max)(low, cx - radius); x <= (std::min)(high, cx + radius); ++x) {
+					if (!byCell.contains(GameData::PackCellCoords(static_cast<std::int32_t>(x), static_cast<std::int32_t>(y)))) {
+						output << std::format("{},{},,,,,,,,,,,,,no_land\n", x, y);
+						spdlog::info("cell ({}, {}): no LAND", x, y);
+					}
+				}
+			}
+			output.close();
+			if (!output) throw std::runtime_error("failed writing " + Platform::Utf8(a_options.inspectGrassPath));
+			// Describe every texture in the report, including bare textures and unresolved GNAMs.
+			// Quoted strings use CSV's doubled quotes so paths and editor IDs remain unambiguous.
+			const auto quote = [](std::string_view value) {
+				std::string result = "\"";
+				for (char c : value) { result += c; if (c == '"') result += c; }
+				return result + '"';
+			};
+			auto texturePath = a_options.inspectGrassPath;
+			texturePath += ".textures.csv";
+			std::ofstream details(texturePath);
+			if (!details) throw std::runtime_error("cannot write " + Platform::Utf8(texturePath));
+			details << "texture,editor_id,grass,model,loadable,density,min_slope,max_slope,water_state,water_distance\n";
+			std::vector<GameData::FormID> ordered(textures.begin(), textures.end());
+			std::ranges::sort(ordered, {}, &GameData::FormID::value);
+			for (const auto id : ordered) {
+				const auto* texture = Grass::Internal::GrassListTexture(a_snapshot, a_settings, id);
+				if (!texture || texture->grassFormIDs.empty()) {
+					details << std::format("{:08X},{}", id.value, quote(texture ? texture->editorID : "unresolved")) << ",,,,,,,,\n";
+					continue;
+				}
+				for (const auto grassID : texture->grassFormIDs) {
+					const auto it = a_snapshot.grassesByFormID.find(grassID);
+					details << std::format("{:08X},{},{:08X},", id.value, quote(texture->editorID), grassID.value);
+					if (it == a_snapshot.grassesByFormID.end()) { details << "\"unresolved\",0,,,,,\n"; continue; }
+					const auto& grass = it->second;
+					const bool loadable = !grass.modelPath.empty() && !(a_settings.unloadableGrass && a_settings.unloadableGrass->contains(grassID));
+					details << std::format("{},{},{},{},{},{},{}\n", quote(grass.modelPath), loadable ? 1 : 0, grass.density,
+						grass.minSlopeDegrees, grass.maxSlopeDegrees, static_cast<std::uint32_t>(grass.underwaterState), grass.distanceFromWaterLevel);
+				}
+			}
+			details.close();
+			if (!details) throw std::runtime_error("failed writing " + Platform::Utf8(texturePath));
+			auto patchPath = a_options.inspectGrassPath;
+			patchPath += ".patches.csv";
+			std::ofstream patches(patchPath);
+			if (!patches) throw std::runtime_error("cannot write " + Platform::Utf8(patchPath));
+			patches << "cell_x,cell_y,patch_x,patch_y,blades,vanilla_blades\n";
+			for (std::size_t i = 0; i < a_lands.size(); ++i) {
+				for (std::size_t p = 0; p < kPatchSide * kPatchSide; ++p) {
+					patches << std::format("{},{},{},{},{},{}\n", *a_lands[i]->cellX, *a_lands[i]->cellY,
+						p % kPatchSide, p / kPatchSide, counts[i].patches[p], counts[i].vanillaPatches[p]);
+				}
+			}
+			patches.close();
+			if (!patches) throw std::runtime_error("failed writing " + Platform::Utf8(patchPath));
+			spdlog::info("local grass reports: {}, {} and {} (neighbours counted within the selected area)",
+				Platform::Utf8(a_options.inspectGrassPath), Platform::Utf8(texturePath), Platform::Utf8(patchPath));
+			return 0;
+		}
+
 		[[nodiscard]] std::uint64_t CountBits(std::span<const std::uint32_t> a_words)
 		{
 			std::uint64_t count = 0;
@@ -414,6 +562,9 @@ namespace FasterNGIO::App
 		auto settings = ResolvePlacementSettings(a_options);
 		settings.unloadableGrass = std::addressof(grassModels.missingGrass);
 		const auto placement = PrepareWorldPlacement(a_plugins.snapshot, a_options.worlds.front(), settings);
+		if (!a_options.inspectGrassPath.empty()) {
+			return InspectGrass(a_options, placement.settings, a_plugins.snapshot, lands);
+		}
 		if (!a_options.exportBladesPath.empty()) {
 			return ExportBlades(a_options, placement.settings, a_plugins.snapshot, lands);
 		}

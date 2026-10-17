@@ -44,6 +44,9 @@ find_package(imgui CONFIG REQUIRED)
 fasterngio_configure_target(FasterNGIO)
 target_link_libraries(FasterNGIO PRIVATE FasterNGIOApp imgui::imgui)
 if(FASTERNGIO_ENABLE_GPU)
+	if(WIN32)
+		fasterngio_enable_agility(FasterNGIO)
+	endif()
 	if(FASTERNGIO_RUNTIME_SHADER_COMPILER)
 		# The shader library is compiled at startup (and cached); DXC is loaded at runtime. A separate
 		# target so editing a shader alone still redeploys it (POST_BUILD only runs on relink).

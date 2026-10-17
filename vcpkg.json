@@ -35,6 +35,10 @@
       "description": "OpenRenderGraph/BasicRHI ray-traced rejection.",
       "dependencies": [
         "directx-headers",
+        {
+          "name": "directx12-agility",
+          "platform": "windows"
+        },
         "directx-dxc",
         {
           "name": "directxmath",

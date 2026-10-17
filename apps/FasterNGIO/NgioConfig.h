@@ -13,7 +13,7 @@
 
 namespace FasterNGIO::GameData
 {
-	struct LoadOrderEntry;
+	using tesworld::LoadOrderEntry;
 }
 
 // NGIO's own settings: Data/SKSE/Plugins/GrassControl.ini and the *_NGIO.ini object files, read as

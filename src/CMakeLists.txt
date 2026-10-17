@@ -12,15 +12,11 @@ add_library(FasterNGIOCore STATIC
 	Collision/ObjExport.h
 	GameData/FormID.h
 	GameData/GameData.h
-	GameData/Internal/RecordExtractors.h
-	GameData/Internal/RecordReader.h
 	GameData/LoadOrder.cpp
 	GameData/LoadOrder.h
 	GameData/ModelPath.cpp
 	GameData/ModelPath.h
 	GameData/PluginParser.cpp
-	GameData/RecordExtractors.cpp
-	GameData/RecordReader.cpp
 	GameData/Records.h
 	GameData/StaticWorld.cpp
 	GameData/StaticWorld.h
@@ -83,6 +79,7 @@ fasterngio_configure_target(FasterNGIOCore)
 target_include_directories(FasterNGIOCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(FasterNGIOCore
 	PUBLIC
+		tesworld::core
 		TBB::tbb
 		spdlog::spdlog_header_only
 		nifly::nifly

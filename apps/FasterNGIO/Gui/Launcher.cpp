@@ -631,7 +631,7 @@ namespace FasterNGIO::Gui
 
 				// Rejection.
 				ImGui::AlignTextToFramePadding();
-				ImGui::TextUnformatted("Grass in objects");
+				ImGui::TextUnformatted("");
 				ImGui::SameLine(labelWidth);
 				ImGui::SetNextItemWidth(fieldWidth);
 				struct Choice
@@ -639,33 +639,9 @@ namespace FasterNGIO::Gui
 					App::RejectChoice value;
 					const char* label;
 				};
-				static constexpr Choice kChoices[] = {
-#if FASTERNGIO_HAS_GPU
-					{ App::RejectChoice::Auto, "Remove: graphics card if supported, else CPU" },
-					//{ App::RejectChoice::Gpu, "Remove: graphics card only" },
-#else
-					{ App::RejectChoice::Auto, "Remove (CPU)" },
-#endif
-					{ App::RejectChoice::Cpu, "Remove: CPU only" },
-					{ App::RejectChoice::None, "Keep (no rejection, like vanilla)" },
-				};
-				const char* current = kChoices[0].label;
-				for (const auto& choice : kChoices) {
-					if (choice.value == _inputs.rejection) {
-						current = choice.label;
-					}
-				}
-				if (ImGui::BeginCombo("##rejection", current)) {
-					for (const auto& choice : kChoices) {
-						if (ImGui::Selectable(choice.label, choice.value == _inputs.rejection)) {
-							_inputs.rejection = choice.value;
-						}
-					}
-					ImGui::EndCombo();
-				}
-				ImGui::BeginDisabled(_inputs.rejection == App::RejectChoice::None);
 				ImGui::Checkbox("Use model geometry instead of collision (experimental)", &_inputs.renderGeometry);
-				ImGui::EndDisabled();
+				_inputs.rejection = &_inputs.renderGeometry ? FasterNGIO::App::RejectChoice::Gpu : FasterNGIO::App::RejectChoice::Cpu;
+				
 				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
 					ImGui::SetTooltip(
 						"Objects that have collision remove grass where their visible mesh is, instead of where\n"
